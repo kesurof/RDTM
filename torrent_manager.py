@@ -73,34 +73,178 @@ class TorrentManager:
         
         logger.info(f"TorrentManager initialisé (mode: {'DRY-RUN' if dry_run else 'RÉEL'})")
     
-    def scan_torrents(self) -> Tuple[bool, Dict[str, Any]]:
-        """Scan complet des torrents Real-Debrid"""
-        logger.info("🔍 Début du scan des torrents")
+    def scan_torrents(self, scan_mode: str = 'auto') -> Tuple[bool, Dict[str, Any]]:
+        """Scan hybride des torrents Real-Debrid (quick/full/auto)"""
+        logger.info(f"🔍 Début du scan des torrents (mode: {scan_mode})")
         start_time = time.time()
         
-        # Récupérer tous les torrents
-        success, torrents_data, error = self.rd_client.get_torrents(limit=1000)
-        if not success:
-            logger.error(f"Échec récupération torrents: {error}")
-            return False, {'error': error}
+        # Déterminer le mode de scan automatiquement
+        if scan_mode == 'auto':
+            scan_mode = self._determine_scan_mode()
+            logger.info(f"Mode auto sélectionné: {scan_mode}")
+        
+        if scan_mode == 'quick':
+            return self._scan_torrents_quick()
+        elif scan_mode == 'full':
+            return self._scan_torrents_full()
+        else:
+            logger.error(f"Mode de scan invalide: {scan_mode}")
+            return False, {'error': f'Mode invalide: {scan_mode}'}
+    
+    def _determine_scan_mode(self) -> str:
+        """Détermine le mode de scan selon la stratégie"""
+        # Vérifier la dernière fois qu'un scan complet a été fait
+        progress = self.database.get_scan_progress('full')
+        
+        if not progress:
+            # Jamais de scan complet, commencer par un scan complet
+            return 'full'
+        
+        last_full_scan = progress.get('last_scan_complete')
+        if not last_full_scan:
+            return 'full'
+        
+        # Si le dernier scan complet date de plus de 7 jours, relancer un scan complet
+        from datetime import datetime, timedelta
+        if isinstance(last_full_scan, str):
+            last_full_scan = datetime.fromisoformat(last_full_scan)
+        
+        if datetime.now() - last_full_scan > timedelta(days=7):
+            logger.info("Dernier scan complet > 7 jours, mode full sélectionné")
+            return 'full'
+        
+        # Sinon, scan rapide
+        return 'quick'
+    
+    def _scan_torrents_quick(self) -> Tuple[bool, Dict[str, Any]]:
+        """Scan rapide - seulement les torrents en échec"""
+        logger.info("⚡ Scan rapide - torrents en échec uniquement")
+        
+        # Marquer le début du scan
+        self.database.update_scan_progress('quick', status='running')
+        
+        start_time = time.time()
+        failed_torrents_data = []
+        
+        # Scanner chaque statut d'échec séparément
+        for status in FAILED_STATUSES:
+            success, torrents_data, error = self.rd_client.get_torrents_by_status(status)
+            if success:
+                failed_torrents_data.extend(torrents_data)
+                logger.info(f"Statut {status}: {len(torrents_data)} torrents")
+            else:
+                logger.warning(f"Erreur scan statut {status}: {error}")
         
         scan_results = {
-            'total_torrents': len(torrents_data),
-            'failed_torrents': 0,
+            'scan_mode': 'quick',
+            'total_torrents': len(failed_torrents_data),
+            'failed_torrents': len(failed_torrents_data),
             'new_failures': 0,
             'updated_torrents': 0,
             'validation_errors': 0,
             'scan_duration': 0
         }
         
-        # Traiter chaque torrent
+        # Traiter les torrents trouvés
+        scan_results['updated_torrents'] = self._process_torrents_batch(failed_torrents_data)
+        scan_results['scan_duration'] = time.time() - start_time
+        
+        # Marquer la fin du scan
+        self.database.update_scan_progress('quick', status='completed')
+        
+        logger.info(f"✅ Scan rapide terminé: {scan_results['total_torrents']} torrents en échec ({scan_results['scan_duration']:.1f}s)")
+        return True, scan_results
+    
+    def _scan_torrents_full(self) -> Tuple[bool, Dict[str, Any]]:
+        """Scan complet avec pagination - traite tous les torrents par chunks"""
+        logger.info("🔍 Scan complet - pagination de tous les torrents")
+        
+        # Récupérer la progression actuelle
+        progress = self.database.get_scan_progress('full')
+        current_offset = progress['current_offset'] if progress else 0
+        
+        # Si on reprend un scan, sinon commencer à 0
+        if not progress or progress.get('status') != 'running':
+            current_offset = 0
+            self.database.update_scan_progress('full', current_offset=0, status='running')
+        
+        start_time = time.time()
+        total_processed = 0
+        total_failed = 0
+        chunk_size = 1000
+        max_chunks_per_session = 5  # Limiter à 5 chunks par session
+        chunks_processed = 0
+        
+        logger.info(f"Reprise du scan à l'offset {current_offset}")
+        
+        while chunks_processed < max_chunks_per_session:
+            # Récupérer un chunk de torrents
+            success, torrents_data, error = self.rd_client.get_torrents(
+                limit=chunk_size, 
+                offset=current_offset
+            )
+            
+            if not success:
+                logger.error(f"Erreur récupération chunk {current_offset}: {error}")
+                break
+            
+            if not torrents_data:
+                # Fin des torrents atteinte
+                logger.info("Fin des torrents atteinte - scan complet terminé")
+                self.database.update_scan_progress('full', 
+                                                 current_offset=0, 
+                                                 total_expected=total_processed,
+                                                 status='completed')
+                break
+            
+            # Traiter ce chunk
+            chunk_processed = self._process_torrents_batch(torrents_data)
+            chunk_failed = sum(1 for t in torrents_data if t.get('status') in FAILED_STATUSES)
+            
+            total_processed += len(torrents_data)
+            total_failed += chunk_failed
+            chunks_processed += 1
+            current_offset += chunk_size
+            
+            # Sauvegarder la progression
+            self.database.update_scan_progress('full', 
+                                             current_offset=current_offset,
+                                             total_expected=total_processed,
+                                             status='running')
+            
+            logger.info(f"Chunk {chunks_processed}/{max_chunks_per_session}: "
+                       f"{len(torrents_data)} torrents, {chunk_failed} en échec")
+            
+            # Petite pause entre chunks pour ne pas surcharger l'API
+            time.sleep(1)
+        
+        scan_duration = time.time() - start_time
+        
+        scan_results = {
+            'scan_mode': 'full',
+            'total_torrents': total_processed,
+            'failed_torrents': total_failed,
+            'chunks_processed': chunks_processed,
+            'current_offset': current_offset,
+            'scan_duration': scan_duration,
+            'completed': chunks_processed < max_chunks_per_session  # False si interrompu
+        }
+        
+        logger.info(f"✅ Scan complet: {total_processed} torrents, "
+                   f"{total_failed} en échec, {chunks_processed} chunks ({scan_duration:.1f}s)")
+        
+        return True, scan_results
+
+    def _process_torrents_batch(self, torrents_data: List[Dict]) -> int:
+        """Traite un batch de torrents et les sauvegarde en base"""
+        processed_count = 0
+        
         for torrent_data in torrents_data:
             try:
                 # Valider les métadonnées
                 valid, validation_error = self.validator.validate_torrent_metadata(torrent_data)
                 if not valid:
                     logger.warning(f"Torrent invalide {torrent_data.get('id', 'unknown')}: {validation_error}")
-                    scan_results['validation_errors'] += 1
                     self.stats['validation_errors'] += 1
                     continue
                 
@@ -125,11 +269,7 @@ class TorrentManager:
                 
                 # Sauvegarder en base
                 if self.database.upsert_torrent(db_torrent_data):
-                    scan_results['updated_torrents'] += 1
-                    
-                    # Compter les échecs
-                    if torrent_data['status'] in FAILED_STATUSES:
-                        scan_results['failed_torrents'] += 1
+                    processed_count += 1
                 
                 self.stats['torrents_processed'] += 1
                 
@@ -137,13 +277,7 @@ class TorrentManager:
                 logger.error(f"Erreur traitement torrent {torrent_data.get('id', 'unknown')}: {e}")
                 continue
         
-        scan_results['scan_duration'] = time.time() - start_time
-        self.stats['scans_completed'] += 1
-        
-        logger.info(f"✅ Scan terminé: {scan_results['total_torrents']} torrents, "
-                   f"{scan_results['failed_torrents']} en échec ({scan_results['scan_duration']:.1f}s)")
-        
-        return True, scan_results
+        return processed_count
     
     def get_reinjection_candidates(self) -> List[TorrentRecord]:
         """Récupère les torrents candidats à la réinjection"""

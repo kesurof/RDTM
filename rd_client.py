@@ -201,16 +201,18 @@ class RealDebridClient:
             self._update_rate_limit(False)
             return False, None, error
     
-    def get_torrents(self, status_filter: Optional[str] = None, limit: int = 100) -> Tuple[bool, List[Dict], Optional[str]]:
-        """Récupère la liste des torrents"""
+    def get_torrents(self, status_filter: Optional[str] = None, limit: int = 100, offset: int = 0) -> Tuple[bool, List[Dict], Optional[str]]:
+        """Récupère la liste des torrents avec pagination"""
         params = {'limit': limit}
         if status_filter:
             params['filter'] = status_filter
+        if offset > 0:
+            params['offset'] = offset
         
         success, data, error = self._make_request('GET', 'torrents', params=params)
         
         if success and isinstance(data, list):
-            logger.info(f"Récupération de {len(data)} torrents")
+            logger.info(f"Récupération de {len(data)} torrents (offset: {offset})")
             return True, data, None
         elif success:
             error = "Format de réponse inattendu"
@@ -218,6 +220,10 @@ class RealDebridClient:
             return False, [], error
         else:
             return False, [], error
+
+    def get_torrents_by_status(self, status: str, limit: int = 1000) -> Tuple[bool, List[Dict], Optional[str]]:
+        """Récupère les torrents par statut spécifique"""
+        return self.get_torrents(status_filter=status, limit=limit)
     
     def get_torrent_info(self, torrent_id: str) -> Tuple[bool, Optional[Dict], Optional[str]]:
         """Récupère les informations détaillées d'un torrent"""
