@@ -482,6 +482,35 @@ class TorrentManager:
         
         # Récupérer depuis la base avec les règles de délai
         candidates = self.database.get_failed_torrents(exclude_recent_attempts=True)
+
+        # Ajouter les torrents avec liens cassés à nettoyer
+        try:
+            with self.database.get_cursor() as cursor:
+                cursor.execute("""
+                    SELECT * FROM torrents 
+                    WHERE needs_symlink_cleanup = 1 
+                    AND attempts_count < ?
+                    ORDER BY priority DESC, last_seen DESC
+                """, [APP_CONFIG['max_retry_attempts']])
+                rows = cursor.fetchall()
+                
+                for row in rows:
+                    candidates.append(TorrentRecord(
+                        id=row['id'],
+                        hash=row['hash'],
+                        filename=row['filename'],
+                        status=row['status'],  # Statut API original
+                        size=row['size'],
+                        added_date=datetime.fromisoformat(row['added_date']),
+                        first_seen=datetime.fromisoformat(row['first_seen']),
+                        last_seen=datetime.fromisoformat(row['last_seen']),
+                        attempts_count=row['attempts_count'],
+                        last_attempt=datetime.fromisoformat(row['last_attempt']) if row['last_attempt'] else None,
+                        last_success=datetime.fromisoformat(row['last_success']) if row['last_success'] else None,
+                        priority=row['priority']
+                    ))
+        except Exception as e:
+            logger.error(f"Erreur récupération torrents needs_symlink_cleanup: {e}")
         
         if not candidates:
             logger.info("Aucun torrent à réinjecter pour le moment")
