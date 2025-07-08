@@ -362,6 +362,10 @@ class DatabaseManager:
                 stats['pending_reinjection'] = cursor.fetchone()['count']
                 
                 return stats
+            
+        except Exception as e:
+            logger.error(f"Erreur récupération statistiques: {e}")
+            return {}
 
     def get_scan_progress(self, scan_type: str) -> Optional[Dict[str, Any]]:
         """Récupère la progression d'un type de scan"""
