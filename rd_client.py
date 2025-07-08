@@ -283,7 +283,7 @@ class RealDebridClient:
         success, data, error = self.get_user_info()
         if success:
             premium_until = data.get('premium', 0) if data else 0
-            if premium_until > time.time():
+            if data.get('type') == 'premium':
                 logger.info("✅ Connexion API validée - Compte premium actif")
                 return True
             else:
