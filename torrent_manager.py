@@ -333,79 +333,79 @@ class TorrentManager:
         
         return True, scan_results
 
-def _find_torrents_by_names(self, torrent_names: List[str]) -> List[TorrentRecord]:
-    """Recherche optimisée avec pré-indexage"""
-    logger.info(f"🔍 Recherche optimisée de {len(torrent_names)} torrents")
-    
-    if not torrent_names:
-        return []
-    
-    # Pré-nettoyer les noms cibles UNE SEULE FOIS
-    logger.info("📝 Pré-nettoyage des noms cibles...")
-    target_cleaned = {}
-    for name in torrent_names:
-        clean = self._clean_torrent_name(name)
-        if clean and len(clean) > 3:  # Éviter les noms trop courts
-            target_cleaned[name] = clean
-    
-    logger.info(f"📊 {len(target_cleaned)} noms valides après nettoyage")
-    
-    # Récupérer et indexer les torrents RD UNE SEULE FOIS
-    logger.info("📚 Construction de l'index Real-Debrid...")
-    rd_index = {}
-    all_rd_torrents = []
-    offset = 0
-    chunk_size = 1000
-    
-    while True:
-        success, torrents_data, error = self.rd_client.get_torrents(limit=chunk_size, offset=offset)
-        if not success or not torrents_data:
-            break
+    def _find_torrents_by_names(self, torrent_names: List[str]) -> List[TorrentRecord]:
+        """Recherche optimisée avec pré-indexage"""
+        logger.info(f"🔍 Recherche optimisée de {len(torrent_names)} torrents")
         
-        for torrent in torrents_data:
-            clean = self._clean_torrent_name(torrent.get('filename', ''))
-            if clean:
-                # Index par mots clés principaux
-                words = set(clean.split()[:5])  # 5 premiers mots max
-                for word in words:
-                    if len(word) > 2:  # Mots significatifs
-                        if word not in rd_index:
-                            rd_index[word] = []
-                        rd_index[word].append(torrent)
+        if not torrent_names:
+            return []
         
-        all_rd_torrents.extend(torrents_data)
-        offset += chunk_size
+        # Pré-nettoyer les noms cibles UNE SEULE FOIS
+        logger.info("📝 Pré-nettoyage des noms cibles...")
+        target_cleaned = {}
+        for name in torrent_names:
+            clean = self._clean_torrent_name(name)
+            if clean and len(clean) > 3:  # Éviter les noms trop courts
+                target_cleaned[name] = clean
         
-        if len(torrents_data) < chunk_size:
-            break
-    
-    logger.info(f"📊 {len(all_rd_torrents)} torrents RD indexés avec {len(rd_index)} mots-clés")
-    
-    # Matching optimisé par mots-clés
-    matched_torrents = []
-    processed = 0
-    
-    for target_name, target_clean in target_cleaned.items():
-        # Obtenir candidats via index (beaucoup plus rapide)
-        candidates = set()
-        target_words = target_clean.split()[:5]
+        logger.info(f"📊 {len(target_cleaned)} noms valides après nettoyage")
         
-        for word in target_words:
-            if word in rd_index:
-                candidates.update(rd_index[word])
+        # Récupérer et indexer les torrents RD UNE SEULE FOIS
+        logger.info("📚 Construction de l'index Real-Debrid...")
+        rd_index = {}
+        all_rd_torrents = []
+        offset = 0
+        chunk_size = 1000
         
-        # Matching précis sur les candidats seulement
-        best_match = self._find_best_match_in_candidates(target_clean, list(candidates))
-        if best_match:
-            matched_torrents.append(best_match)
-            logger.debug(f"✅ Match: {target_name[:50]}...")
+        while True:
+            success, torrents_data, error = self.rd_client.get_torrents(limit=chunk_size, offset=offset)
+            if not success or not torrents_data:
+                break
+            
+            for torrent in torrents_data:
+                clean = self._clean_torrent_name(torrent.get('filename', ''))
+                if clean:
+                    # Index par mots clés principaux
+                    words = set(clean.split()[:5])  # 5 premiers mots max
+                    for word in words:
+                        if len(word) > 2:  # Mots significatifs
+                            if word not in rd_index:
+                                rd_index[word] = []
+                            rd_index[word].append(torrent)
+            
+            all_rd_torrents.extend(torrents_data)
+            offset += chunk_size
+            
+            if len(torrents_data) < chunk_size:
+                break
         
-        processed += 1
-        if processed % 100 == 0:
-            logger.info(f"📈 Progression matching: {processed}/{len(target_cleaned)}")
-    
-    logger.info(f"🎯 {len(matched_torrents)} correspondances trouvées")
-    return matched_torrents
+        logger.info(f"📊 {len(all_rd_torrents)} torrents RD indexés avec {len(rd_index)} mots-clés")
+        
+        # Matching optimisé par mots-clés
+        matched_torrents = []
+        processed = 0
+        
+        for target_name, target_clean in target_cleaned.items():
+            # Obtenir candidats via index (beaucoup plus rapide)
+            candidates = set()
+            target_words = target_clean.split()[:5]
+            
+            for word in target_words:
+                if word in rd_index:
+                    candidates.update(rd_index[word])
+            
+            # Matching précis sur les candidats seulement
+            best_match = self._find_best_match_in_candidates(target_clean, list(candidates))
+            if best_match:
+                matched_torrents.append(best_match)
+                logger.debug(f"✅ Match: {target_name[:50]}...")
+            
+            processed += 1
+            if processed % 100 == 0:
+                logger.info(f"📈 Progression matching: {processed}/{len(target_cleaned)}")
+        
+        logger.info(f"🎯 {len(matched_torrents)} correspondances trouvées")
+        return matched_torrents
 
     def _find_best_match_in_candidates(self, target_clean: str, candidates: List[Dict]) -> Optional[TorrentRecord]:
         """Trouve le meilleur match dans une liste réduite de candidats"""
