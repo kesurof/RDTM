@@ -320,6 +320,45 @@ class FailureHandler:
             logger.error(f"Erreur récupération retries: {e}")
             return []
     
+    def _remove_from_retry_queue(self, torrent_id: str, error_type: str):
+        """Supprime un torrent de la queue de retry après succès"""
+        try:
+            with self.database.get_cursor() as cursor:
+                cursor.execute("""
+                    DELETE FROM retry_queue 
+                    WHERE torrent_id = ? AND error_type = ?
+                """, (torrent_id, error_type))
+                
+                logger.debug(f"Retry supprimé de la queue: {torrent_id}")
+                
+        except Exception as e:
+            logger.error(f"Erreur suppression retry queue: {e}")
+    
+    def _update_retry_attempt(self, torrent_id: str, error_type: str, success: bool):
+        """Met à jour une tentative de retry"""
+        try:
+            with self.database.get_cursor() as cursor:
+                if success:
+                    # Supprimer de la queue si succès
+                    self._remove_from_retry_queue(torrent_id, error_type)
+                else:
+                    # Incrémenter le compteur et reprogrammer si < 3 tentatives
+                    cursor.execute("""
+                        UPDATE retry_queue 
+                        SET retry_count = retry_count + 1,
+                            last_retry_attempt = ?,
+                            scheduled_retry = CASE 
+                                WHEN retry_count < 2 THEN datetime(?, '+3 hours')
+                                ELSE scheduled_retry 
+                            END
+                        WHERE torrent_id = ? AND error_type = ?
+                    """, (datetime.now(), datetime.now(), torrent_id, error_type))
+                    
+                    logger.debug(f"Retry attempt mis à jour: {torrent_id}")
+                
+        except Exception as e:
+            logger.error(f"Erreur mise à jour retry attempt: {e}")
+
     def close(self):
         """Fermeture propre"""
         if hasattr(self, 'session'):

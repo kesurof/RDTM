@@ -865,6 +865,89 @@ class TorrentManager:
     def get_pending_retries(self) -> List[Dict]:
         """Récupère les torrents prêts pour retry depuis FailureHandler"""
         return self.failure_handler.get_pending_retries()
+    
+    def process_pending_retries(self) -> Dict[str, Any]:
+        """Traite les retries différés prêts"""
+        logger.info("🔄 Traitement des retries différés")
+        
+        pending_retries = self.get_pending_retries()
+        if not pending_retries:
+            logger.info("Aucun retry en attente")
+            return {'processed': 0, 'successful': 0, 'failed': 0}
+        
+        logger.info(f"📊 {len(pending_retries)} retries prêts à traiter")
+        
+        results = {
+            'processed': 0,
+            'successful': 0,
+            'failed': 0,
+            'errors': []
+        }
+        
+        for retry in pending_retries:
+            try:
+                # Reconstituer un TorrentRecord depuis les données retry
+                torrent_record = self._retry_to_torrent_record(retry)
+                if not torrent_record:
+                    continue
+                
+                # Tenter la réinjection
+                success, message = self.reinject_torrent(torrent_record)
+                
+                results['processed'] += 1
+                
+                if success:
+                    results['successful'] += 1
+                    # Supprimer de la queue de retry
+                    self.failure_handler._remove_from_retry_queue(retry['torrent_id'], retry['error_type'])
+                    logger.info(f"✅ Retry réussi: {retry['filename'][:50]}...")
+                else:
+                    results['failed'] += 1
+                    # Incrémenter le compteur de retry ou reprogrammer
+                    self.failure_handler._update_retry_attempt(retry['torrent_id'], retry['error_type'], success=False)
+                    logger.warning(f"❌ Retry échoué: {retry['filename'][:50]}... - {message}")
+                    
+            except Exception as e:
+                results['failed'] += 1
+                results['errors'].append({
+                    'torrent_id': retry['torrent_id'],
+                    'error': str(e)
+                })
+                logger.error(f"Erreur retry {retry['torrent_id']}: {e}")
+        
+        logger.info(f"📊 Retries traités: {results['successful']}/{results['processed']} réussis")
+        return results
+    
+    def _retry_to_torrent_record(self, retry: Dict) -> Optional[TorrentRecord]:
+        """Convertit un retry en TorrentRecord pour réinjection"""
+        try:
+            # Récupérer le torrent depuis la base
+            with self.database.get_cursor() as cursor:
+                cursor.execute("SELECT * FROM torrents WHERE id = ?", (retry['torrent_id'],))
+                row = cursor.fetchone()
+                
+                if not row:
+                    logger.warning(f"Torrent introuvable pour retry: {retry['torrent_id']}")
+                    return None
+                
+                return TorrentRecord(
+                    id=row['id'],
+                    hash=row['hash'],
+                    filename=row['filename'],
+                    status=row['status'],
+                    size=row['size'],
+                    added_date=datetime.fromisoformat(row['added_date']),
+                    first_seen=datetime.fromisoformat(row['first_seen']),
+                    last_seen=datetime.fromisoformat(row['last_seen']),
+                    attempts_count=row['attempts_count'],
+                    last_attempt=datetime.fromisoformat(row['last_attempt']) if row['last_attempt'] else None,
+                    last_success=datetime.fromisoformat(row['last_success']) if row['last_success'] else None,
+                    priority=row['priority']
+                )
+                
+        except Exception as e:
+            logger.error(f"Erreur conversion retry vers TorrentRecord: {e}")
+            return None
 
     def close(self):
         """Fermeture propre"""
