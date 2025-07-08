@@ -483,7 +483,7 @@ class TorrentManager:
         # Récupérer depuis la base avec les règles de délai
         candidates = self.database.get_failed_torrents(exclude_recent_attempts=True)
 
-        # Ajouter les torrents avec liens cassés à nettoyer
+            # Ajouter les torrents avec liens cassés à nettoyer
         try:
             with self.database.get_cursor() as cursor:
                 cursor.execute("""
@@ -973,8 +973,8 @@ class TorrentManager:
                 })
                 logger.error(f"Erreur retry {retry['torrent_id']}: {e}")
         
-        logger.info(f"📊 Retries traités: {results['successful']}/{results['processed']} réussis")
-        return results
+            logger.info(f"📊 Retries traités: {results['successful']}/{results['processed']} réussis")
+            return results
     
     def _retry_to_torrent_record(self, retry: Dict) -> Optional[TorrentRecord]:
         """Convertit un retry en TorrentRecord pour réinjection"""
