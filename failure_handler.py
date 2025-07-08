@@ -135,19 +135,40 @@ class FailureHandler:
         import re
         # Supprimer l'extension et nettoyer
         clean = os.path.splitext(filename)[0]
+        # Supprimer les informations techniques et groupes
+        clean = re.sub(r'\b(x264|x265|AC3|EAC3|DTS|AAC|BluRay|WEBRip|WEBDL|1080p|720p|Multi|VFQ|VFF)\b', '', clean, flags=re.IGNORECASE)
+        clean = re.sub(r'\b(JiHEFF|Winks|EXTREME|NEO|ACOOL|GOLD)\b', '', clean, flags=re.IGNORECASE)
+        # Normaliser les séparateurs
         clean = re.sub(r'[._-]', ' ', clean.lower())
+        # Supprimer les caractères spéciaux et dates entre parenthèses
+        clean = re.sub(r'\([^)]*\)', '', clean)
+        clean = re.sub(r'[{}[\]<>]', '', clean)
+        # Normaliser les espaces
         clean = ' '.join(clean.split())
-        return clean
+        return clean.strip()
     
     def _filename_matches(self, link_name: str, target_name: str) -> bool:
         """Vérifie si un nom de lien correspond au fichier cible"""
         from difflib import SequenceMatcher
         
         link_clean = self._clean_filename_for_search(link_name)
-        similarity = SequenceMatcher(None, link_clean, target_name).ratio()
         
-        # Seuil de similarité pour considérer une correspondance
-        return similarity > 0.8
+        # Extraire les mots clés importants du nom cible
+        target_words = set(target_name.split())
+        link_words = set(link_clean.split())
+        
+        # Vérifier que les mots principaux correspondent
+        common_words = target_words.intersection(link_words)
+        
+        # Si au moins 70% des mots du target sont dans le lien
+        if len(target_words) > 0:
+            word_match_rate = len(common_words) / len(target_words)
+            if word_match_rate >= 0.7:
+                return True
+        
+        # Fallback sur similarité globale
+        similarity = SequenceMatcher(None, link_clean, target_name).ratio()
+        return similarity > 0.6  # Seuil réduit de 0.8 à 0.6
     
     def _delete_symlink(self, file_path: str) -> bool:
         """Supprime un lien symbolique"""
