@@ -98,33 +98,18 @@ class RealDebridManager:
             scan_success, scan_results = self.torrent_manager.scan_torrents()
             scan_duration = self.performance.get_elapsed('scan_start')
             
-            # 1.5 Scanner les liens cassés (coordination intelligente)
+            # 1.5 Scanner les liens cassés (toujours après scan complet)
             symlinks_scanned = False
             if scan_results.get('scan_mode') == 'full':  # Seulement lors des scans complets
-                # Vérifier s'il n'y a pas eu de scan manuel récent
-                symlinks_progress = self.torrent_manager.database.get_scan_progress('symlinks')
-                skip_symlinks = False
-                
-                if symlinks_progress and symlinks_progress.get('last_scan_complete'):
-                    from datetime import datetime, timedelta
-                    last_symlinks = symlinks_progress['last_scan_complete']
-                    if isinstance(last_symlinks, str):
-                        last_symlinks = datetime.fromisoformat(last_symlinks)
-                    
-                    if datetime.now() - last_symlinks < timedelta(hours=6):
-                        logger.info("🤝 Coordination: scan symlinks manuel récent, skip automatique")
-                        skip_symlinks = True
-                
-                if not skip_symlinks:
-                    try:
-                        logger.info("🔗 Scan symlinks automatique après scan complet")
-                        symlink_success, symlink_results = self.torrent_manager.scan_torrents(scan_mode='symlinks')
-                        if symlink_success:
-                            scan_results['symlinks'] = symlink_results
-                            symlinks_scanned = True
-                            logger.info(f"✅ Symlinks auto: {symlink_results.get('matched_torrents', 0)} nouveaux torrents détectés")
-                    except Exception as e:
-                        logger.error(f"Erreur scan symlinks auto: {e}")
+                try:
+                    logger.info("🔗 Scan symlinks automatique après scan complet (forcé)")
+                    symlink_success, symlink_results = self.torrent_manager.scan_torrents(scan_mode='symlinks')
+                    if symlink_success:
+                        scan_results['symlinks'] = symlink_results
+                        symlinks_scanned = True
+                        logger.info(f"✅ Symlinks auto: {symlink_results.get('matched_torrents', 0)} nouveaux torrents détectés")
+                except Exception as e:
+                    logger.error(f"Erreur scan symlinks auto: {e}")
                 else:
                     logger.info("⏭️ Scan symlinks automatique ignoré (coordination intelligente)")
             
