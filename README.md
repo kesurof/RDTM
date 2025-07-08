@@ -249,8 +249,11 @@ print(f'Test: {results.get(\"success\", 0)}/{results.get(\"processed\", 0)} réu
 
 ---
 
-🔄 Workflow détaillé
-Cycle normal (toutes les 10 minutes)
+## 🔄 Workflow détaillé
+
+### Cycle normal (toutes les 10 minutes)
+
+```
 1. 🔍 SCAN AUTOMATIQUE
    ├── Auto: Détermine quick/full selon dernière exécution
    ├── Quick: Scan API torrents en échec uniquement (~2s)
@@ -283,7 +286,11 @@ Cycle normal (toutes les 10 minutes)
    ├── Sauvegarde base SQLite
    ├── Rotation logs
    └── Métriques performance
-Cycle complet (toutes les 24h)
+```
+
+### Cycle complet (toutes les 24h)
+
+```
 1. 🔍 SCAN COMPLET API
    └── Full: Pagination complète de tous les torrents (~30s)
 
@@ -306,9 +313,17 @@ Cycle complet (toutes les 24h)
 
 5. 🔄 RESET AUTOMATIQUE
    └── Remise à zéro offset pour nouveau cycle 24h
-Modes de scan
-ModeFréquenceDescriptionPerformanceDéclenchementQuick10 minAPI échecs uniquement~2sCycle normalFull24hPagination complète API~30sAuto après 24hSymlinks24hDétection liens cassés~5minAuto après Full
-Note importante : Le scan symlinks se déclenche automatiquement après chaque scan complet pour détecter les vrais échecs que l'API Real-Debrid ne voit pas (126 liens cassés vs 1 torrent API détecté dans nos tests).
+```
+
+### Modes de scan
+
+| Mode | Fréquence | Description | Performance | Déclenchement |
+|------|-----------|-------------|-------------|---------------|
+| **Quick** | 10 min | API échecs uniquement | ~2s | Cycle normal |
+| **Full** | 24h | Pagination complète API | ~30s | Auto après 24h |
+| **Symlinks** | 24h | Détection liens cassés | ~5min | Auto après Full |
+
+**Note importante** : Le scan symlinks se déclenche **automatiquement après chaque scan complet** pour détecter les vrais échecs que l'API Real-Debrid ne voit pas (126 liens cassés vs 1 torrent API détecté dans nos tests).
 
 ### Gestion des échecs
 
@@ -639,6 +654,8 @@ git push origin feature/awesome-feature
 - **Meetups** : Événements utilisateurs (prévu)
 
 ---
+
+## 📄 remerciements
 
 ### Remerciements
 - **Inspiration** : `advanced_symlink_checker.py` pour l'UI et l'approche
