@@ -98,29 +98,44 @@ class TorrentManager:
             return False, {'error': f'Mode invalide: {scan_mode}'}
     
     def _determine_scan_mode(self) -> str:
-        """Détermine le mode de scan selon la stratégie"""
+        """Détermine le mode de scan selon la stratégie avec coordination intelligente"""
+        from datetime import datetime, timedelta
+        
         # Vérifier la dernière fois qu'un scan complet a été fait
         progress = self.database.get_scan_progress('full')
         
         if not progress:
             # Jamais de scan complet, commencer par un scan complet
+            logger.info("Premier scan complet")
             return 'full'
         
         last_full_scan = progress.get('last_scan_complete')
         if not last_full_scan:
             return 'full'
         
-        # Si le dernier scan complet date de plus de 7 jours, relancer un scan complet
-        from datetime import datetime, timedelta
+        # Convertir la date si c'est une string
         if isinstance(last_full_scan, str):
             last_full_scan = datetime.fromisoformat(last_full_scan)
         
+        # Si le dernier scan complet date de plus de 7 jours, relancer un scan complet
         if datetime.now() - last_full_scan > timedelta(days=7):
             logger.info("Dernier scan complet > 7 jours, mode full sélectionné")
             return 'full'
         
         # Vérifier si le scan actuel est terminé (offset = 0 signifie terminé)
         if progress.get('current_offset', 0) == 0:
+            # Vérifier s'il y a eu un scan symlinks manuel récent
+            symlinks_progress = self.database.get_scan_progress('symlinks')
+            if symlinks_progress and symlinks_progress.get('last_scan_complete'):
+                last_symlinks = symlinks_progress['last_scan_complete']
+                if isinstance(last_symlinks, str):
+                    last_symlinks = datetime.fromisoformat(last_symlinks)
+                
+                # Si scan symlinks manuel récent (< 6h), éviter redondance
+                if datetime.now() - last_symlinks < timedelta(hours=6):
+                    logger.info("Scan symlinks manuel récent détecté (< 6h), coordination intelligente → mode quick")
+                    return 'quick'
+            
             # Si scan terminé depuis plus de 24h, relancer un scan complet
             if datetime.now() - last_full_scan > timedelta(hours=24):
                 logger.info("Scan complet terminé depuis > 24h, nouveau scan full")
@@ -128,6 +143,9 @@ class TorrentManager:
             else:
                 # Sinon scan rapide pour les nouveaux
                 return 'quick'
+        
+        # Scan en cours, continuer en mode quick
+        return 'quick'
     
     def _scan_torrents_quick(self) -> Tuple[bool, Dict[str, Any]]:
         """Scan rapide - seulement les torrents en échec"""

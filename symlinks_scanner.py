@@ -220,10 +220,15 @@ class SymlinksScanner:
             # Scan d'un seul répertoire
             print(f"🔍 Scan de: {selected_dirs[0]}")
             success, results = tm._scan_torrents_symlinks(selected_paths[0])
+            
+            # Enregistrer le scan manuel
+            if success:
+                tm.database.update_scan_progress('symlinks', status='completed')
         else:
             # Scan multiple -> utiliser le scan complet
             print(f"🔍 Scan de {len(selected_dirs)} répertoires")
             success, results = tm.scan_torrents(scan_mode='symlinks')
+            # Le scan complet enregistre déjà automatiquement
             
             # Filtrer les résultats pour les répertoires sélectionnés
             if success and 'broken_by_directory' in results:
