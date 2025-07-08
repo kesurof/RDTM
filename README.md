@@ -622,20 +622,13 @@ git push origin feature/awesome-feature
 
 ### Communauté
 - **Discord** : Serveur communautaire (prévu)
-- **Reddit** : r/selfhosted discussions
 - **Documentation** : Wiki collaboratif
 - **Meetups** : Événements utilisateurs (prévu)
 
 ---
 
-## 📄 Licence et remerciements
-
-### Licence
-MIT License - Utilisation libre pour projets personnels et commerciaux.
-
 ### Remerciements
 - **Inspiration** : `advanced_symlink_checker.py` pour l'UI et l'approche
-- **Communauté** : r/selfhosted pour les retours et idées
 - **APIs** : Real-Debrid, Sonarr, Radarr pour les intégrations
 - **Technologies** : Python, SQLite, Docker pour la stack technique
 
