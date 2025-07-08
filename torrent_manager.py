@@ -203,7 +203,7 @@ class TorrentManager:
         total_processed = 0
         total_failed = 0
         chunk_size = 1000
-        max_chunks_per_session = 5  # Limiter à 5 chunks par session
+        max_chunks_per_session = float('inf')  # Pas de limite, scan complet
         chunks_processed = 0
         
         logger.info(f"Reprise du scan à l'offset {current_offset}")
@@ -235,6 +235,9 @@ class TorrentManager:
             total_processed += len(torrents_data)
             total_failed += chunk_failed
             chunks_processed += 1
+            # Log progression tous les 10 chunks (10k torrents)
+            if chunks_processed % 10 == 0:
+                logger.info(f"📈 Progression globale: {chunks_processed} chunks ({total_processed:,} torrents)")
             current_offset += chunk_size
             
             # Sauvegarder la progression
@@ -258,7 +261,7 @@ class TorrentManager:
             'chunks_processed': chunks_processed,
             'current_offset': current_offset,
             'scan_duration': scan_duration,
-            'completed': chunks_processed < max_chunks_per_session  # False si interrompu
+            'completed': True  # Scan complet jusqu'à épuisement
         }
         
         logger.info(f"✅ Scan complet: {total_processed} torrents, "
