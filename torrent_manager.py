@@ -100,6 +100,10 @@ class TorrentManager:
     def _determine_scan_mode(self) -> str:
         """Détermine le mode de scan selon la stratégie avec coordination intelligente"""
         from datetime import datetime, timedelta
+
+        # Reset offset au démarrage pour scan complet depuis le début
+        self.database.update_scan_progress('full', current_offset=0, status='idle')
+        logger.info("🔄 Offset reset à 0 pour scan complet au démarrage")
         
         # Vérifier la dernière fois qu'un scan complet a été fait
         progress = self.database.get_scan_progress('full')
