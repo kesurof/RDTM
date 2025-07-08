@@ -32,7 +32,8 @@ FAILED_STATUSES = {
     'magnet_error',
     'error', 
     'virus',
-    'dead'
+    'dead',
+    'symlink_broken'  # Torrents détectés via liens cassés
 }
 
 # Statuts de torrents OK (ne pas traiter)

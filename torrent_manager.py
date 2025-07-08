@@ -256,20 +256,150 @@ class TorrentManager:
         # Extraire les noms de torrents uniques
         torrent_names = self.symlink_checker.get_unique_torrent_names(all_broken_links)
         
+        # Rechercher les correspondances dans Real-Debrid
+        matched_torrents = []
+        if torrent_names:
+            logger.info(f"🔍 Recherche des correspondances pour {len(torrent_names)} torrents")
+            matched_torrents = self._find_torrents_by_names(list(torrent_names))
+            
+            # Sauvegarder les torrents trouvés en base avec statut spécial
+            for torrent in matched_torrents:
+                # Marquer comme trouvé via symlinks cassés
+                db_torrent_data = {
+                    'id': torrent.id,
+                    'hash': torrent.hash,
+                    'filename': torrent.filename,
+                    'status': 'symlink_broken',  # Statut spécial pour ces torrents
+                    'size': torrent.size,
+                    'added': torrent.added_date,
+                    'priority': 3,  # Haute priorité
+                    'metadata': {
+                        'source': 'symlink_checker',
+                        'broken_links_count': len([link for link in all_broken_links if link.torrent_name in torrent.filename])
+                    }
+                }
+                self.database.upsert_torrent(db_torrent_data)
+        
         scan_results = {
             'scan_mode': 'symlinks',
             'total_broken_links': len(all_broken_links),
-            'unique_torrents': len(torrent_names),
+            'unique_torrents_searched': len(torrent_names),
+            'matched_torrents': len(matched_torrents),
             'directories_scanned': list(broken_results.keys()),
             'scan_duration': time.time() - start_time,
             'broken_by_directory': {k: len(v) for k, v in broken_results.items()},
-            'torrent_names': list(torrent_names)
+            'torrent_names': list(torrent_names),
+            'match_rate': (len(matched_torrents) / len(torrent_names) * 100) if torrent_names else 0
         }
         
         logger.info(f"✅ Scan symlinks terminé: {len(all_broken_links)} liens cassés, "
-                   f"{len(torrent_names)} torrents à rechercher ({scan_results['scan_duration']:.1f}s)")
+                   f"{len(matched_torrents)}/{len(torrent_names)} torrents trouvés dans Real-Debrid "
+                   f"({scan_results['match_rate']:.1f}% match) ({scan_results['scan_duration']:.1f}s)")
         
         return True, scan_results
+
+    def _find_torrents_by_names(self, torrent_names: List[str]) -> List[TorrentRecord]:
+        """Recherche les torrents Real-Debrid correspondant aux noms extraits des symlinks"""
+        logger.info(f"🔍 Recherche de {len(torrent_names)} torrents dans Real-Debrid")
+        
+        if not torrent_names:
+            return []
+        
+        # Récupérer tous les torrents Real-Debrid pour la recherche
+        all_rd_torrents = []
+        offset = 0
+        chunk_size = 1000
+        
+        while True:
+            success, torrents_data, error = self.rd_client.get_torrents(limit=chunk_size, offset=offset)
+            if not success or not torrents_data:
+                break
+            
+            all_rd_torrents.extend(torrents_data)
+            offset += chunk_size
+            
+            # Eviter les boucles infinies
+            if len(torrents_data) < chunk_size:
+                break
+        
+        logger.info(f"📊 {len(all_rd_torrents)} torrents Real-Debrid récupérés pour la recherche")
+        
+        # Rechercher les correspondances
+        matched_torrents = []
+        for target_name in torrent_names:
+            best_match = self._find_best_torrent_match(target_name, all_rd_torrents)
+            if best_match:
+                matched_torrents.append(best_match)
+                logger.info(f"✅ Match: {target_name[:50]}... → {best_match.filename[:50]}...")
+            else:
+                logger.warning(f"❌ Pas de match: {target_name[:50]}...")
+        
+        logger.info(f"🎯 {len(matched_torrents)} correspondances trouvées sur {len(torrent_names)} recherchées")
+        return matched_torrents
+    
+    def _find_best_torrent_match(self, target_name: str, rd_torrents: List[Dict]) -> Optional[TorrentRecord]:
+        """Trouve le meilleur match pour un nom de torrent dans la liste Real-Debrid"""
+        from difflib import SequenceMatcher
+        
+        best_match = None
+        best_score = 0.0
+        min_score = 0.7  # Seuil de similarité minimum
+        
+        # Nettoyer le nom cible pour la comparaison
+        target_clean = self._clean_torrent_name(target_name)
+        
+        for rd_torrent in rd_torrents:
+            rd_filename = rd_torrent.get('filename', '')
+            rd_clean = self._clean_torrent_name(rd_filename)
+            
+            # Calculer la similarité
+            similarity = SequenceMatcher(None, target_clean, rd_clean).ratio()
+            
+            # Bonus si match exact du début (même release group)
+            if rd_clean.startswith(target_clean[:30]) or target_clean.startswith(rd_clean[:30]):
+                similarity += 0.1
+            
+            if similarity > best_score and similarity >= min_score:
+                best_score = similarity
+                best_match = rd_torrent
+        
+        if best_match:
+            # Convertir en TorrentRecord
+            try:
+                return TorrentRecord(
+                    id=best_match['id'],
+                    hash=best_match['hash'],
+                    filename=best_match['filename'],
+                    status=best_match['status'],
+                    size=best_match.get('bytes', 0),
+                    added_date=datetime.fromisoformat(best_match['added'].replace('Z', '+00:00')),
+                    first_seen=datetime.now(),
+                    last_seen=datetime.now(),
+                    priority=3  # Haute priorité pour les torrents issus de symlinks cassés
+                )
+            except Exception as e:
+                logger.error(f"Erreur conversion TorrentRecord: {e}")
+                return None
+        
+        return None
+    
+    def _clean_torrent_name(self, name: str) -> str:
+        """Nettoie un nom de torrent pour la comparaison"""
+        import re
+        
+        # Remplacer les séparateurs par des espaces
+        cleaned = re.sub(r'[._-]', ' ', name.lower())
+        
+        # Supprimer les extensions
+        cleaned = re.sub(r'\.(mkv|mp4|avi|mov|wmv|flv|m4v|webm)$', '', cleaned)
+        
+        # Supprimer les informations entre parenthèses/crochets en fin
+        cleaned = re.sub(r'\s*[\[\(].*?[\]\)]\s*$', '', cleaned)
+        
+        # Normaliser les espaces
+        cleaned = ' '.join(cleaned.split())
+        
+        return cleaned.strip()
 
     def _process_torrents_batch(self, torrents_data: List[Dict]) -> int:
         """Traite un batch de torrents et les sauvegarde en base"""
