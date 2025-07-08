@@ -101,7 +101,8 @@ class DatabaseManager:
                         last_attempt TIMESTAMP,
                         last_success TIMESTAMP,
                         priority INTEGER DEFAULT 2,
-                        metadata TEXT  -- JSON pour infos supplémentaires
+                        metadata TEXT,  -- JSON pour infos supplémentaires
+                        needs_symlink_cleanup BOOLEAN DEFAULT 0  -- Flag pour nettoyage liens cassés
                     )
                 """)
                 
@@ -187,6 +188,7 @@ class DatabaseManager:
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_permanent_failures_date ON permanent_failures(failure_date)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_retry_queue_scheduled ON retry_queue(scheduled_retry)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_retry_queue_torrent ON retry_queue(torrent_id)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_torrents_symlink_cleanup ON torrents(needs_symlink_cleanup)")
                 
                 logger.info("Base de données initialisée avec succès")
     
