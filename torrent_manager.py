@@ -334,11 +334,27 @@ class TorrentManager:
         return True, scan_results
 
     def _find_torrents_by_names(self, torrent_names: List[str]) -> List[TorrentRecord]:
-        """Recherche les torrents Real-Debrid correspondant aux noms extraits des symlinks"""
-        logger.info(f"🔍 Recherche de {len(torrent_names)} torrents dans Real-Debrid")
+        """Recherche optimisée avec pré-indexage"""
+        logger.info(f"🔍 Recherche optimisée de {len(torrent_names)} torrents")
         
         if not torrent_names:
             return []
+        
+        # Pré-nettoyer les noms cibles UNE SEULE FOIS
+        target_cleaned = {name: self._clean_torrent_name(name) for name in torrent_names}
+        
+        # Récupérer et pré-indexer les torrents RD UNE SEULE FOIS
+        rd_index = self._build_rd_index()
+        
+        # Matching optimisé
+        matched_torrents = []
+        for target_name, target_clean in target_cleaned.items():
+            best_match = self._fast_match(target_clean, rd_index)
+            if best_match:
+                matched_torrents.append(best_match)
+                logger.info(f"✅ Match: {target_name[:50]}...")
+        
+        return matched_torrents
         
         # Récupérer tous les torrents Real-Debrid pour la recherche
         all_rd_torrents = []
