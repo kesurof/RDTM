@@ -42,12 +42,13 @@ class AttemptRecord:
     api_response: str = ""
 
 class DatabaseManager:
-    """Gestionnaire de base de données SQLite avec threading safety"""
+    """Gestionnaire de base de données SQLite avec threading safety et migrations automatiques"""
     
     def __init__(self, db_path: Optional[Path] = None):
         self.db_path = db_path or DATABASE_CONFIG['db_path']
         self._local = threading.local()
         self._lock = threading.Lock()
+        self.current_version = 2  # Version actuelle du schéma
         self.setup_database()
         
     def _get_connection(self) -> sqlite3.Connection:
@@ -82,115 +83,193 @@ class DatabaseManager:
         finally:
             cursor.close()
     
-    def setup_database(self):
-        """Initialise la structure de la base de données"""
-        with self._lock:
+    def get_schema_version(self) -> int:
+        """Récupère la version actuelle du schéma"""
+        try:
             with self.get_cursor() as cursor:
-                # Table des torrents
+                cursor.execute("PRAGMA user_version")
+                result = cursor.fetchone()
+                return result[0] if result else 0
+        except Exception:
+            return 0
+    
+    def set_schema_version(self, version: int):
+        """Définit la version du schéma"""
+        try:
+            with self.get_cursor() as cursor:
+                cursor.execute(f"PRAGMA user_version = {version}")
+        except Exception as e:
+            logger.error(f"Erreur mise à jour version schéma: {e}")
+    
+    def migrate_database(self):
+        """Effectue les migrations nécessaires"""
+        current_version = self.get_schema_version()
+        logger.info(f"Version schéma actuelle: {current_version}, cible: {self.current_version}")
+        
+        if current_version < self.current_version:
+            logger.info("🔄 Migration de la base de données nécessaire")
+            
+            try:
+                with self._lock:
+                    # Migration de v0/v1 vers v2 (ajout needs_symlink_cleanup)
+                    if current_version < 2:
+                        self._migrate_to_v2()
+                    
+                    # Ici on pourra ajouter d'autres migrations futures
+                    # if current_version < 3:
+                    #     self._migrate_to_v3()
+                    
+                    # Mettre à jour la version
+                    self.set_schema_version(self.current_version)
+                    logger.info(f"✅ Migration terminée vers version {self.current_version}")
+                    
+            except Exception as e:
+                logger.error(f"❌ Erreur during migration: {e}")
+                raise
+        else:
+            logger.debug("Base de données à jour")
+    
+    def _migrate_to_v2(self):
+        """Migration vers version 2 - ajoute needs_symlink_cleanup"""
+        logger.info("📝 Migration v2: ajout colonne needs_symlink_cleanup")
+        
+        with self.get_cursor() as cursor:
+            # Vérifier si la colonne existe déjà
+            cursor.execute("PRAGMA table_info(torrents)")
+            columns = [col[1] for col in cursor.fetchall()]
+            
+            if 'needs_symlink_cleanup' not in columns:
+                # Ajouter la nouvelle colonne
                 cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS torrents (
-                        id TEXT PRIMARY KEY,
-                        hash TEXT NOT NULL,
-                        filename TEXT NOT NULL,
-                        status TEXT NOT NULL,
-                        size INTEGER NOT NULL,
-                        added_date TIMESTAMP NOT NULL,
-                        first_seen TIMESTAMP NOT NULL,
-                        last_seen TIMESTAMP NOT NULL,
-                        attempts_count INTEGER DEFAULT 0,
-                        last_attempt TIMESTAMP,
-                        last_success TIMESTAMP,
-                        priority INTEGER DEFAULT 2,
-                        metadata TEXT,  -- JSON pour infos supplémentaires
-                        needs_symlink_cleanup BOOLEAN DEFAULT 0  -- Flag pour nettoyage liens cassés
-                    )
+                    ALTER TABLE torrents 
+                    ADD COLUMN needs_symlink_cleanup BOOLEAN DEFAULT 0
                 """)
                 
-                # Table des tentatives de réinjection
+                # Créer l'index pour cette colonne
                 cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS attempts (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        torrent_id TEXT NOT NULL,
-                        attempt_date TIMESTAMP NOT NULL,
-                        success BOOLEAN NOT NULL,
-                        error_message TEXT,
-                        response_time_ms INTEGER,
-                        api_response TEXT,
-                        FOREIGN KEY (torrent_id) REFERENCES torrents (id)
-                    )
+                    CREATE INDEX IF NOT EXISTS idx_torrents_symlink_cleanup 
+                    ON torrents(needs_symlink_cleanup)
                 """)
                 
-                # Table des métriques
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS metrics (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        timestamp TIMESTAMP NOT NULL,
-                        metric_type TEXT NOT NULL,
-                        metric_name TEXT NOT NULL,
-                        value REAL NOT NULL,
-                        tags TEXT,  -- JSON pour tags additionnels
-                        aggregation_period TEXT  -- 1h, 6h, 1d, etc.
-                    )
-                """)
-                
-                # Table de progression des scans
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS scan_progress (
-                        id INTEGER PRIMARY KEY,
-                        scan_type TEXT NOT NULL,  -- 'quick' ou 'full'
-                        current_offset INTEGER DEFAULT 0,
-                        total_expected INTEGER DEFAULT 0,
-                        last_scan_start TIMESTAMP,
-                        last_scan_complete TIMESTAMP,
-                        status TEXT DEFAULT 'idle'  -- 'idle', 'running', 'completed'
-                    )
-                """)
+                logger.info("✅ Colonne needs_symlink_cleanup ajoutée")
+            else:
+                logger.info("ℹ️ Colonne needs_symlink_cleanup déjà présente")
+    
+    def setup_database(self):
+        """Initialise la structure de la base de données avec migrations automatiques"""
+        with self._lock:
+            # Créer les tables de base (version initiale)
+            self._create_base_tables()
+            
+            # Effectuer les migrations si nécessaire
+            self.migrate_database()
+            
+            logger.info("Base de données initialisée avec succès")
+    
+    def _create_base_tables(self):
+        """Crée les tables de base (sans les nouvelles colonnes pour éviter les conflits)"""
+        with self.get_cursor() as cursor:
+            # Table des torrents (structure de base)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS torrents (
+                    id TEXT PRIMARY KEY,
+                    hash TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    size INTEGER NOT NULL,
+                    added_date TIMESTAMP NOT NULL,
+                    first_seen TIMESTAMP NOT NULL,
+                    last_seen TIMESTAMP NOT NULL,
+                    attempts_count INTEGER DEFAULT 0,
+                    last_attempt TIMESTAMP,
+                    last_success TIMESTAMP,
+                    priority INTEGER DEFAULT 2,
+                    metadata TEXT  -- JSON pour infos supplémentaires
+                )
+            """)
+            
+            # Table des tentatives de réinjection
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS attempts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    torrent_id TEXT NOT NULL,
+                    attempt_date TIMESTAMP NOT NULL,
+                    success BOOLEAN NOT NULL,
+                    error_message TEXT,
+                    response_time_ms INTEGER,
+                    api_response TEXT,
+                    FOREIGN KEY (torrent_id) REFERENCES torrents (id)
+                )
+            """)
+            
+            # Table des métriques
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS metrics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TIMESTAMP NOT NULL,
+                    metric_type TEXT NOT NULL,
+                    metric_name TEXT NOT NULL,
+                    value REAL NOT NULL,
+                    tags TEXT,  -- JSON pour tags additionnels
+                    aggregation_period TEXT  -- 1h, 6h, 1d, etc.
+                )
+            """)
+            
+            # Table de progression des scans
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS scan_progress (
+                    id INTEGER PRIMARY KEY,
+                    scan_type TEXT NOT NULL,  -- 'quick' ou 'full'
+                    current_offset INTEGER DEFAULT 0,
+                    total_expected INTEGER DEFAULT 0,
+                    last_scan_start TIMESTAMP,
+                    last_scan_complete TIMESTAMP,
+                    status TEXT DEFAULT 'idle'  -- 'idle', 'running', 'completed'
+                )
+            """)
 
-                # Table des échecs permanents (infringing_file, etc.)
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS permanent_failures (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        torrent_id TEXT NOT NULL,
-                        filename TEXT NOT NULL,
-                        error_type TEXT NOT NULL,
-                        error_message TEXT,
-                        failure_date TIMESTAMP NOT NULL,
-                        processed BOOLEAN DEFAULT FALSE,
-                        UNIQUE(torrent_id, error_type)
-                    )
-                """)
-                
-                # Table de retry différé (too_many_requests, etc.)
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS retry_queue (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        torrent_id TEXT NOT NULL,
-                        filename TEXT NOT NULL,
-                        error_type TEXT NOT NULL,
-                        error_message TEXT,
-                        original_failure TIMESTAMP NOT NULL,
-                        scheduled_retry TIMESTAMP NOT NULL,
-                        retry_count INTEGER DEFAULT 0,
-                        last_retry_attempt TIMESTAMP,
-                        UNIQUE(torrent_id, error_type)
-                    )
-                """)
-                
-                # Index pour les performances
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_torrents_status ON torrents(status)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_torrents_last_seen ON torrents(last_seen)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_torrents_hash ON torrents(hash)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_attempts_torrent_id ON attempts(torrent_id)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_attempts_date ON attempts(attempt_date)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON metrics(timestamp)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_metrics_type_name ON metrics(metric_type, metric_name)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_scan_progress_type ON scan_progress(scan_type)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_permanent_failures_date ON permanent_failures(failure_date)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_retry_queue_scheduled ON retry_queue(scheduled_retry)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_retry_queue_torrent ON retry_queue(torrent_id)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_torrents_symlink_cleanup ON torrents(needs_symlink_cleanup)")
-                
-                logger.info("Base de données initialisée avec succès")
+            # Table des échecs permanents (infringing_file, etc.)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS permanent_failures (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    torrent_id TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    error_type TEXT NOT NULL,
+                    error_message TEXT,
+                    failure_date TIMESTAMP NOT NULL,
+                    processed BOOLEAN DEFAULT FALSE,
+                    UNIQUE(torrent_id, error_type)
+                )
+            """)
+            
+            # Table de retry différé (too_many_requests, etc.)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS retry_queue (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    torrent_id TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    error_type TEXT NOT NULL,
+                    error_message TEXT,
+                    original_failure TIMESTAMP NOT NULL,
+                    scheduled_retry TIMESTAMP NOT NULL,
+                    retry_count INTEGER DEFAULT 0,
+                    last_retry_attempt TIMESTAMP,
+                    UNIQUE(torrent_id, error_type)
+                )
+            """)
+            
+            # Index pour les performances (de base)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_torrents_status ON torrents(status)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_torrents_last_seen ON torrents(last_seen)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_torrents_hash ON torrents(hash)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_attempts_torrent_id ON attempts(torrent_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_attempts_date ON attempts(attempt_date)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON metrics(timestamp)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_metrics_type_name ON metrics(metric_type, metric_name)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_scan_progress_type ON scan_progress(scan_type)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_permanent_failures_date ON permanent_failures(failure_date)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_retry_queue_scheduled ON retry_queue(scheduled_retry)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_retry_queue_torrent ON retry_queue(torrent_id)")
     
     def upsert_torrent(self, torrent_data: Dict[str, Any]) -> bool:
         """Insert ou update d'un torrent"""
@@ -202,42 +281,50 @@ class DatabaseManager:
                 cursor.execute("SELECT id, first_seen FROM torrents WHERE id = ?", (torrent_data['id'],))
                 existing = cursor.fetchone()
                 
+                # Préparer les champs dynamiquement selon la structure actuelle
+                base_fields = {
+                    'hash': torrent_data['hash'],
+                    'filename': torrent_data['filename'],
+                    'status': torrent_data['status'],
+                    'size': torrent_data['size'],
+                    'added_date': torrent_data['added'],
+                    'last_seen': now,
+                    'metadata': json.dumps(torrent_data.get('metadata', {}))
+                }
+                
+                # Ajouter les champs optionnels s'ils existent dans la table
+                cursor.execute("PRAGMA table_info(torrents)")
+                available_columns = [col[1] for col in cursor.fetchall()]
+                
+                if 'needs_symlink_cleanup' in available_columns:
+                    base_fields['needs_symlink_cleanup'] = torrent_data.get('needs_symlink_cleanup', False)
+                
                 if existing:
-                    # Update
-                    cursor.execute("""
-                        UPDATE torrents SET 
-                            hash = ?, filename = ?, status = ?, size = ?,
-                            added_date = ?, last_seen = ?, metadata = ?
+                    # Update - construire la requête dynamiquement
+                    set_clause = ', '.join([f"{field} = ?" for field in base_fields.keys()])
+                    values = list(base_fields.values()) + [torrent_data['id']]
+                    
+                    cursor.execute(f"""
+                        UPDATE torrents SET {set_clause}
                         WHERE id = ?
-                    """, (
-                        torrent_data['hash'],
-                        torrent_data['filename'],
-                        torrent_data['status'],
-                        torrent_data['size'],
-                        torrent_data['added'],
-                        now,
-                        json.dumps(torrent_data.get('metadata', {})),
-                        torrent_data['id']
-                    ))
+                    """, values)
                 else:
-                    # Insert
-                    cursor.execute("""
-                        INSERT INTO torrents (
-                            id, hash, filename, status, size, added_date,
-                            first_seen, last_seen, attempts_count, priority, metadata
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-                    """, (
-                        torrent_data['id'],
-                        torrent_data['hash'],
-                        torrent_data['filename'],
-                        torrent_data['status'],
-                        torrent_data['size'],
-                        torrent_data['added'],
-                        now,
-                        now,
-                        torrent_data.get('priority', 2),
-                        json.dumps(torrent_data.get('metadata', {}))
-                    ))
+                    # Insert - construire la requête dynamiquement
+                    insert_fields = {
+                        'id': torrent_data['id'],
+                        'first_seen': now,
+                        'attempts_count': 0,
+                        'priority': torrent_data.get('priority', 2),
+                        **base_fields
+                    }
+                    
+                    fields = ', '.join(insert_fields.keys())
+                    placeholders = ', '.join(['?'] * len(insert_fields))
+                    values = list(insert_fields.values())
+                    
+                    cursor.execute(f"""
+                        INSERT INTO torrents ({fields}) VALUES ({placeholders})
+                    """, values)
                 
                 return True
                 
