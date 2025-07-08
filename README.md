@@ -249,16 +249,12 @@ print(f'Test: {results.get(\"success\", 0)}/{results.get(\"processed\", 0)} réu
 
 ---
 
-## 🔄 Workflow détaillé
-
-### Cycle principal (toutes les 10 minutes)
-
-```
+🔄 Workflow détaillé
+Cycle normal (toutes les 10 minutes)
 1. 🔍 SCAN AUTOMATIQUE
    ├── Auto: Détermine quick/full selon dernière exécution
-   ├── Quick: Scan API torrents en échec uniquement
-   ├── Full: Pagination complète (5000 torrents/session)
-   └── Symlinks: Détection liens cassés + mapping RD
+   ├── Quick: Scan API torrents en échec uniquement (~2s)
+   └── Full: Pagination complète (5000 torrents/session ~30s)
 
 2. 🎯 RÉINJECTION INTELLIGENTE
    ├── Sélection candidats (priorité + rate limiting)
@@ -287,15 +283,32 @@ print(f'Test: {results.get(\"success\", 0)}/{results.get(\"processed\", 0)} réu
    ├── Sauvegarde base SQLite
    ├── Rotation logs
    └── Métriques performance
-```
+Cycle complet (toutes les 24h)
+1. 🔍 SCAN COMPLET API
+   └── Full: Pagination complète de tous les torrents (~30s)
 
-### Modes de scan
+2. 🔗 SCAN SYMLINKS AUTOMATIQUE
+   ├── Détection liens cassés dans /Medias (~5min)
+   ├── Extraction noms torrents depuis chemins Zurg
+   ├── Mapping avec torrents Real-Debrid (92%+ match)
+   ├── Marquage statut 'symlink_broken' (priorité haute)
+   └── Intégration dans workflow réinjection
 
-| Mode | Fréquence | Description | Performance |
-|------|-----------|-------------|-------------|
-| **Quick** | Continue | API échecs uniquement | ~2s |
-| **Full** | 24h | Pagination complète | ~30s |
-| **Symlinks** | Manuel | Détection liens cassés | ~5min |
+3. 🎯 RÉINJECTION HYBRIDE
+   ├── Torrents API en échec (magnet_error, error, virus, dead)
+   ├── Torrents symlinks cassés (vrais échecs détectés)
+   └── Traitement unifié avec post-traitement automatique
+
+4. 🛠️ POST-TRAITEMENT RENFORCÉ
+   ├── infringing_file → Suppression physique + scan média
+   ├── too_many_requests → Queue intelligente +3h
+   └── Archivage définitif des échecs traités
+
+5. 🔄 RESET AUTOMATIQUE
+   └── Remise à zéro offset pour nouveau cycle 24h
+Modes de scan
+ModeFréquenceDescriptionPerformanceDéclenchementQuick10 minAPI échecs uniquement~2sCycle normalFull24hPagination complète API~30sAuto après 24hSymlinks24hDétection liens cassés~5minAuto après Full
+Note importante : Le scan symlinks se déclenche automatiquement après chaque scan complet pour détecter les vrais échecs que l'API Real-Debrid ne voit pas (126 liens cassés vs 1 torrent API détecté dans nos tests).
 
 ### Gestion des échecs
 
