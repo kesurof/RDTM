@@ -299,7 +299,8 @@ class TorrentManager:
                     'id': torrent.id,
                     'hash': torrent.hash,
                     'filename': torrent.filename,
-                    'status': 'symlink_broken',  # Statut spécial pour ces torrents
+                    'status': torrent.status,  # Garder le statut API original
+                    'needs_symlink_cleanup': True,  # Flag pour traitement liens cassés
                     'size': torrent.size,
                     'added': torrent.added_date,
                     'priority': 3,  # Haute priorité
