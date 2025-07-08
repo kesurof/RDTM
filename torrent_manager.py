@@ -956,6 +956,17 @@ class TorrentManager:
             logger.error(f"Erreur conversion retry vers TorrentRecord: {e}")
             return None
 
+    def force_full_rescan(self) -> bool:
+        """Force un nouveau scan complet en remettant l'offset à 0"""
+        logger.info("🔄 Force nouveau scan complet")
+        try:
+            self.database.update_scan_progress('full', current_offset=0, status='idle')
+            logger.info("✅ Offset reset, prochain scan sera complet")
+            return True
+        except Exception as e:
+            logger.error(f"Erreur force rescan: {e}")
+            return False
+
     def close(self):
         """Fermeture propre"""
         try:
