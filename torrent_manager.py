@@ -333,60 +333,123 @@ class TorrentManager:
         
         return True, scan_results
 
-    def _find_torrents_by_names(self, torrent_names: List[str]) -> List[TorrentRecord]:
-        """Recherche optimisée avec pré-indexage"""
-        logger.info(f"🔍 Recherche optimisée de {len(torrent_names)} torrents")
+def _find_torrents_by_names(self, torrent_names: List[str]) -> List[TorrentRecord]:
+    """Recherche optimisée avec pré-indexage"""
+    logger.info(f"🔍 Recherche optimisée de {len(torrent_names)} torrents")
+    
+    if not torrent_names:
+        return []
+    
+    # Pré-nettoyer les noms cibles UNE SEULE FOIS
+    logger.info("📝 Pré-nettoyage des noms cibles...")
+    target_cleaned = {}
+    for name in torrent_names:
+        clean = self._clean_torrent_name(name)
+        if clean and len(clean) > 3:  # Éviter les noms trop courts
+            target_cleaned[name] = clean
+    
+    logger.info(f"📊 {len(target_cleaned)} noms valides après nettoyage")
+    
+    # Récupérer et indexer les torrents RD UNE SEULE FOIS
+    logger.info("📚 Construction de l'index Real-Debrid...")
+    rd_index = {}
+    all_rd_torrents = []
+    offset = 0
+    chunk_size = 1000
+    
+    while True:
+        success, torrents_data, error = self.rd_client.get_torrents(limit=chunk_size, offset=offset)
+        if not success or not torrents_data:
+            break
         
-        if not torrent_names:
-            return []
+        for torrent in torrents_data:
+            clean = self._clean_torrent_name(torrent.get('filename', ''))
+            if clean:
+                # Index par mots clés principaux
+                words = set(clean.split()[:5])  # 5 premiers mots max
+                for word in words:
+                    if len(word) > 2:  # Mots significatifs
+                        if word not in rd_index:
+                            rd_index[word] = []
+                        rd_index[word].append(torrent)
         
-        # Pré-nettoyer les noms cibles UNE SEULE FOIS
-        target_cleaned = {name: self._clean_torrent_name(name) for name in torrent_names}
+        all_rd_torrents.extend(torrents_data)
+        offset += chunk_size
         
-        # Récupérer et pré-indexer les torrents RD UNE SEULE FOIS
-        rd_index = self._build_rd_index()
+        if len(torrents_data) < chunk_size:
+            break
+    
+    logger.info(f"📊 {len(all_rd_torrents)} torrents RD indexés avec {len(rd_index)} mots-clés")
+    
+    # Matching optimisé par mots-clés
+    matched_torrents = []
+    processed = 0
+    
+    for target_name, target_clean in target_cleaned.items():
+        # Obtenir candidats via index (beaucoup plus rapide)
+        candidates = set()
+        target_words = target_clean.split()[:5]
         
-        # Matching optimisé
-        matched_torrents = []
-        for target_name, target_clean in target_cleaned.items():
-            best_match = self._fast_match(target_clean, rd_index)
-            if best_match:
-                matched_torrents.append(best_match)
-                logger.info(f"✅ Match: {target_name[:50]}...")
+        for word in target_words:
+            if word in rd_index:
+                candidates.update(rd_index[word])
         
-        return matched_torrents
+        # Matching précis sur les candidats seulement
+        best_match = self._find_best_match_in_candidates(target_clean, list(candidates))
+        if best_match:
+            matched_torrents.append(best_match)
+            logger.debug(f"✅ Match: {target_name[:50]}...")
         
-        # Récupérer tous les torrents Real-Debrid pour la recherche
-        all_rd_torrents = []
-        offset = 0
-        chunk_size = 1000
+        processed += 1
+        if processed % 100 == 0:
+            logger.info(f"📈 Progression matching: {processed}/{len(target_cleaned)}")
+    
+    logger.info(f"🎯 {len(matched_torrents)} correspondances trouvées")
+    return matched_torrents
+
+    def _find_best_match_in_candidates(self, target_clean: str, candidates: List[Dict]) -> Optional[TorrentRecord]:
+        """Trouve le meilleur match dans une liste réduite de candidats"""
+        if not candidates:
+            return None
         
-        while True:
-            success, torrents_data, error = self.rd_client.get_torrents(limit=chunk_size, offset=offset)
-            if not success or not torrents_data:
-                break
+        from difflib import SequenceMatcher
+        
+        best_match = None
+        best_score = 0.0
+        min_score = 0.7
+        
+        for candidate in candidates:
+            rd_filename = candidate.get('filename', '')
+            rd_clean = self._clean_torrent_name(rd_filename)
             
-            all_rd_torrents.extend(torrents_data)
-            offset += chunk_size
+            similarity = SequenceMatcher(None, target_clean, rd_clean).ratio()
             
-            # Eviter les boucles infinies
-            if len(torrents_data) < chunk_size:
-                break
+            # Bonus pour match de début
+            if rd_clean.startswith(target_clean[:30]) or target_clean.startswith(rd_clean[:30]):
+                similarity += 0.1
+            
+            if similarity > best_score and similarity >= min_score:
+                best_score = similarity
+                best_match = candidate
         
-        logger.info(f"📊 {len(all_rd_torrents)} torrents Real-Debrid récupérés pour la recherche")
+        if best_match:
+            try:
+                return TorrentRecord(
+                    id=best_match['id'],
+                    hash=best_match['hash'],
+                    filename=best_match['filename'],
+                    status=best_match['status'],
+                    size=best_match.get('bytes', 0),
+                    added_date=datetime.fromisoformat(best_match['added'].replace('Z', '+00:00')),
+                    first_seen=datetime.now(),
+                    last_seen=datetime.now(),
+                    priority=3
+                )
+            except Exception as e:
+                logger.error(f"Erreur conversion TorrentRecord: {e}")
+                return None
         
-        # Rechercher les correspondances
-        matched_torrents = []
-        for target_name in torrent_names:
-            best_match = self._find_best_torrent_match(target_name, all_rd_torrents)
-            if best_match:
-                matched_torrents.append(best_match)
-                logger.info(f"✅ Match: {target_name[:50]}... → {best_match.filename[:50]}...")
-            else:
-                logger.warning(f"❌ Pas de match: {target_name[:50]}...")
-        
-        logger.info(f"🎯 {len(matched_torrents)} correspondances trouvées sur {len(torrent_names)} recherchées")
-        return matched_torrents
+        return None
     
     def _find_best_torrent_match(self, target_name: str, rd_torrents: List[Dict]) -> Optional[TorrentRecord]:
         """Trouve le meilleur match pour un nom de torrent dans la liste Real-Debrid"""
