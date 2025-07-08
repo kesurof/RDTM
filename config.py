@@ -170,6 +170,10 @@ PRIORITY_CONFIG = {
 
 def get_env_config() -> Dict[str, Any]:
     """Récupère la configuration depuis les variables d'environnement"""
+    # Charger le fichier .env
+    from dotenv import load_dotenv
+    load_dotenv()
+    
     return {
         'rd_api_token': os.environ.get('RD_API_TOKEN'),
         'discord_webhook': os.environ.get('DISCORD_WEBHOOK_URL'),
