@@ -110,18 +110,17 @@ class DatabaseManager:
             logger.info("🔄 Migration de la base de données nécessaire")
             
             try:
-                with self._lock:
-                    # Migration de v0/v1 vers v2 (ajout needs_symlink_cleanup)
-                    if current_version < 2:
-                        self._migrate_to_v2()
-                    
-                    # Ici on pourra ajouter d'autres migrations futures
-                    # if current_version < 3:
-                    #     self._migrate_to_v3()
-                    
-                    # Mettre à jour la version
-                    self.set_schema_version(self.current_version)
-                    logger.info(f"✅ Migration terminée vers version {self.current_version}")
+                # Migration de v0/v1 vers v2 (ajout needs_symlink_cleanup)
+                if current_version < 2:
+                    self._migrate_to_v2()
+                
+                # Ici on pourra ajouter d'autres migrations futures
+                # if current_version < 3:
+                #     self._migrate_to_v3()
+                
+                # Mettre à jour la version
+                self.set_schema_version(self.current_version)
+                logger.info(f"✅ Migration terminée vers version {self.current_version}")
                     
             except Exception as e:
                 logger.error(f"❌ Erreur during migration: {e}")
