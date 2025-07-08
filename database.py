@@ -153,6 +153,7 @@ class DatabaseManager:
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_attempts_date ON attempts(attempt_date)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON metrics(timestamp)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_metrics_type_name ON metrics(metric_type, metric_name)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_scan_progress_type ON scan_progress(scan_type)")
                 
                 logger.info("Base de données initialisée avec succès")
     
@@ -361,6 +362,59 @@ class DatabaseManager:
                 stats['pending_reinjection'] = cursor.fetchone()['count']
                 
                 return stats
+
+                def get_scan_progress(self, scan_type: str) -> Optional[Dict[str, Any]]:
+        """Récupère la progression d'un type de scan"""
+        try:
+            with self.get_cursor() as cursor:
+                cursor.execute("""
+                    SELECT * FROM scan_progress WHERE scan_type = ?
+                """, (scan_type,))
+                row = cursor.fetchone()
+                
+                if row:
+                    return {
+                        'scan_type': row['scan_type'],
+                        'current_offset': row['current_offset'],
+                        'total_expected': row['total_expected'],
+                        'last_scan_start': row['last_scan_start'],
+                        'last_scan_complete': row['last_scan_complete'],
+                        'status': row['status']
+                    }
+                return None
+                
+        except Exception as e:
+            logger.error(f"Erreur récupération progression scan {scan_type}: {e}")
+            return None
+    
+    def update_scan_progress(self, scan_type: str, current_offset: int = 0, 
+                            total_expected: int = 0, status: str = 'idle') -> bool:
+        """Met à jour la progression d'un scan"""
+        try:
+            with self.get_cursor() as cursor:
+                now = datetime.now()
+                
+                # Upsert de la progression
+                cursor.execute("""
+                    INSERT OR REPLACE INTO scan_progress (
+                        id, scan_type, current_offset, total_expected, status,
+                        last_scan_start, last_scan_complete
+                    ) VALUES (
+                        (SELECT id FROM scan_progress WHERE scan_type = ?),
+                        ?, ?, ?, ?,
+                        CASE WHEN ? = 'running' THEN ? ELSE 
+                            (SELECT last_scan_start FROM scan_progress WHERE scan_type = ?) END,
+                        CASE WHEN ? = 'completed' THEN ? ELSE 
+                            (SELECT last_scan_complete FROM scan_progress WHERE scan_type = ?) END
+                    )
+                """, (scan_type, scan_type, current_offset, total_expected, status,
+                     status, now, scan_type, status, now, scan_type))
+                
+                return True
+                
+        except Exception as e:
+            logger.error(f"Erreur mise à jour progression scan {scan_type}: {e}")
+            return False
                 
         except Exception as e:
             logger.error(f"Erreur récupération statistiques: {e}")
