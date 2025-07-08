@@ -363,7 +363,7 @@ class DatabaseManager:
                 
                 return stats
 
-                def get_scan_progress(self, scan_type: str) -> Optional[Dict[str, Any]]:
+    def get_scan_progress(self, scan_type: str) -> Optional[Dict[str, Any]]:
         """Récupère la progression d'un type de scan"""
         try:
             with self.get_cursor() as cursor:
@@ -415,10 +415,6 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Erreur mise à jour progression scan {scan_type}: {e}")
             return False
-                
-        except Exception as e:
-            logger.error(f"Erreur récupération statistiques: {e}")
-            return {}
     
     def cleanup_old_data(self) -> Tuple[int, int]:
         """Nettoie les anciennes données selon la configuration"""
