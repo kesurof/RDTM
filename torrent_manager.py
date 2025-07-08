@@ -11,6 +11,7 @@ from config import FAILED_STATUSES, SUCCESS_STATUSES, APP_CONFIG, PRIORITY_CONFI
 from database import get_database, TorrentRecord, AttemptRecord
 from rd_client import RealDebridClient
 from torrent_validator import get_validator
+from symlink_checker import get_symlink_checker
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,7 @@ class TorrentManager:
         self.dry_run = dry_run
         self.rd_client = RealDebridClient()
         self.validator = get_validator()
+        self.symlink_checker = get_symlink_checker()
         self.database = get_database()
         self.stats = {
             'scans_completed': 0,
@@ -87,6 +89,8 @@ class TorrentManager:
             return self._scan_torrents_quick()
         elif scan_mode == 'full':
             return self._scan_torrents_full()
+        elif scan_mode == 'symlinks':
+            return self._scan_torrents_symlinks()
         else:
             logger.error(f"Mode de scan invalide: {scan_mode}")
             return False, {'error': f'Mode invalide: {scan_mode}'}
@@ -232,6 +236,38 @@ class TorrentManager:
         
         logger.info(f"✅ Scan complet: {total_processed} torrents, "
                    f"{total_failed} en échec, {chunks_processed} chunks ({scan_duration:.1f}s)")
+        
+        return True, scan_results
+
+    def _scan_torrents_symlinks(self, base_path: str = None) -> Tuple[bool, Dict[str, Any]]:
+        """Scan des liens symboliques cassés pour détecter les vrais échecs"""
+        logger.info("🔗 Scan des liens symboliques cassés")
+        
+        start_time = time.time()
+        
+        # Scanner les répertoires média pour liens cassés
+        broken_results = self.symlink_checker.scan_media_directories(base_path)
+        
+        # Collecter tous les liens cassés
+        all_broken_links = []
+        for directory, links in broken_results.items():
+            all_broken_links.extend(links)
+        
+        # Extraire les noms de torrents uniques
+        torrent_names = self.symlink_checker.get_unique_torrent_names(all_broken_links)
+        
+        scan_results = {
+            'scan_mode': 'symlinks',
+            'total_broken_links': len(all_broken_links),
+            'unique_torrents': len(torrent_names),
+            'directories_scanned': list(broken_results.keys()),
+            'scan_duration': time.time() - start_time,
+            'broken_by_directory': {k: len(v) for k, v in broken_results.items()},
+            'torrent_names': list(torrent_names)
+        }
+        
+        logger.info(f"✅ Scan symlinks terminé: {len(all_broken_links)} liens cassés, "
+                   f"{len(torrent_names)} torrents à rechercher ({scan_results['scan_duration']:.1f}s)")
         
         return True, scan_results
 
