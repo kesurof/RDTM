@@ -119,8 +119,15 @@ class TorrentManager:
             logger.info("Dernier scan complet > 7 jours, mode full sélectionné")
             return 'full'
         
-        # Sinon, scan rapide
-        return 'quick'
+        # Vérifier si le scan actuel est terminé (offset = 0 signifie terminé)
+        if progress.get('current_offset', 0) == 0:
+            # Si scan terminé depuis plus de 24h, relancer un scan complet
+            if datetime.now() - last_full_scan > timedelta(hours=24):
+                logger.info("Scan complet terminé depuis > 24h, nouveau scan full")
+                return 'full'
+            else:
+                # Sinon scan rapide pour les nouveaux
+                return 'quick'
     
     def _scan_torrents_quick(self) -> Tuple[bool, Dict[str, Any]]:
         """Scan rapide - seulement les torrents en échec"""
@@ -198,7 +205,7 @@ class TorrentManager:
                 # Fin des torrents atteinte
                 logger.info("Fin des torrents atteinte - scan complet terminé")
                 self.database.update_scan_progress('full', 
-                                                 current_offset=0, 
+                                                 current_offset=0,  # Reset à 0 quand terminé
                                                  total_expected=total_processed,
                                                  status='completed')
                 break
