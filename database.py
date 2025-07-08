@@ -1,0 +1,434 @@
+#!/usr/bin/env python3
+
+import sqlite3
+import json
+import logging
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Dict, List, Optional, Any, Tuple
+from contextlib import contextmanager
+from dataclasses import dataclass
+import threading
+
+from config import DATABASE_CONFIG, APP_CONFIG, METRICS_CONFIG
+
+logger = logging.getLogger(__name__)
+
+@dataclass
+class TorrentRecord:
+    """Représentation d'un enregistrement de torrent"""
+    id: str
+    hash: str
+    filename: str
+    status: str
+    size: int
+    added_date: datetime
+    first_seen: datetime
+    last_seen: datetime
+    attempts_count: int = 0
+    last_attempt: Optional[datetime] = None
+    last_success: Optional[datetime] = None
+    priority: int = 2  # 1=low, 2=normal, 3=high
+
+@dataclass
+class AttemptRecord:
+    """Représentation d'une tentative de réinjection"""
+    id: Optional[int] = None
+    torrent_id: str = ""
+    attempt_date: datetime = None
+    success: bool = False
+    error_message: str = ""
+    response_time_ms: int = 0
+    api_response: str = ""
+
+class DatabaseManager:
+    """Gestionnaire de base de données SQLite avec threading safety"""
+    
+    def __init__(self, db_path: Optional[Path] = None):
+        self.db_path = db_path or DATABASE_CONFIG['db_path']
+        self._local = threading.local()
+        self._lock = threading.Lock()
+        self.setup_database()
+        
+    def _get_connection(self) -> sqlite3.Connection:
+        """Obtient une connexion thread-safe"""
+        if not hasattr(self._local, 'connection'):
+            self._local.connection = sqlite3.connect(
+                str(self.db_path),
+                timeout=DATABASE_CONFIG['connection_timeout'],
+                check_same_thread=False
+            )
+            self._local.connection.row_factory = sqlite3.Row
+            # Optimisations SQLite
+            self._local.connection.execute("PRAGMA journal_mode=WAL")
+            self._local.connection.execute("PRAGMA synchronous=NORMAL")
+            self._local.connection.execute("PRAGMA cache_size=10000")
+            self._local.connection.execute("PRAGMA temp_store=MEMORY")
+            
+        return self._local.connection
+    
+    @contextmanager
+    def get_cursor(self):
+        """Context manager pour les opérations de base de données"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            yield cursor
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Erreur base de données: {e}")
+            raise
+        finally:
+            cursor.close()
+    
+    def setup_database(self):
+        """Initialise la structure de la base de données"""
+        with self._lock:
+            with self.get_cursor() as cursor:
+                # Table des torrents
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS torrents (
+                        id TEXT PRIMARY KEY,
+                        hash TEXT NOT NULL,
+                        filename TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        size INTEGER NOT NULL,
+                        added_date TIMESTAMP NOT NULL,
+                        first_seen TIMESTAMP NOT NULL,
+                        last_seen TIMESTAMP NOT NULL,
+                        attempts_count INTEGER DEFAULT 0,
+                        last_attempt TIMESTAMP,
+                        last_success TIMESTAMP,
+                        priority INTEGER DEFAULT 2,
+                        metadata TEXT  -- JSON pour infos supplémentaires
+                    )
+                """)
+                
+                # Table des tentatives de réinjection
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS attempts (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        torrent_id TEXT NOT NULL,
+                        attempt_date TIMESTAMP NOT NULL,
+                        success BOOLEAN NOT NULL,
+                        error_message TEXT,
+                        response_time_ms INTEGER,
+                        api_response TEXT,
+                        FOREIGN KEY (torrent_id) REFERENCES torrents (id)
+                    )
+                """)
+                
+                # Table des métriques
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS metrics (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp TIMESTAMP NOT NULL,
+                        metric_type TEXT NOT NULL,
+                        metric_name TEXT NOT NULL,
+                        value REAL NOT NULL,
+                        tags TEXT,  -- JSON pour tags additionnels
+                        aggregation_period TEXT  -- 1h, 6h, 1d, etc.
+                    )
+                """)
+                
+                # Table de configuration
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS config (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL,
+                        updated_at TIMESTAMP NOT NULL,
+                        description TEXT
+                    )
+                """)
+                
+                # Index pour les performances
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_torrents_status ON torrents(status)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_torrents_last_seen ON torrents(last_seen)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_torrents_hash ON torrents(hash)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_attempts_torrent_id ON attempts(torrent_id)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_attempts_date ON attempts(attempt_date)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON metrics(timestamp)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_metrics_type_name ON metrics(metric_type, metric_name)")
+                
+                logger.info("Base de données initialisée avec succès")
+    
+    def upsert_torrent(self, torrent_data: Dict[str, Any]) -> bool:
+        """Insert ou update d'un torrent"""
+        try:
+            with self.get_cursor() as cursor:
+                now = datetime.now()
+                
+                # Vérifier si le torrent existe
+                cursor.execute("SELECT id, first_seen FROM torrents WHERE id = ?", (torrent_data['id'],))
+                existing = cursor.fetchone()
+                
+                if existing:
+                    # Update
+                    cursor.execute("""
+                        UPDATE torrents SET 
+                            hash = ?, filename = ?, status = ?, size = ?,
+                            added_date = ?, last_seen = ?, metadata = ?
+                        WHERE id = ?
+                    """, (
+                        torrent_data['hash'],
+                        torrent_data['filename'],
+                        torrent_data['status'],
+                        torrent_data['size'],
+                        torrent_data['added'],
+                        now,
+                        json.dumps(torrent_data.get('metadata', {})),
+                        torrent_data['id']
+                    ))
+                else:
+                    # Insert
+                    cursor.execute("""
+                        INSERT INTO torrents (
+                            id, hash, filename, status, size, added_date,
+                            first_seen, last_seen, attempts_count, priority, metadata
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                    """, (
+                        torrent_data['id'],
+                        torrent_data['hash'],
+                        torrent_data['filename'],
+                        torrent_data['status'],
+                        torrent_data['size'],
+                        torrent_data['added'],
+                        now,
+                        now,
+                        torrent_data.get('priority', 2),
+                        json.dumps(torrent_data.get('metadata', {}))
+                    ))
+                
+                return True
+                
+        except Exception as e:
+            logger.error(f"Erreur upsert torrent {torrent_data.get('id', 'unknown')}: {e}")
+            return False
+    
+    def get_failed_torrents(self, exclude_recent_attempts: bool = True) -> List[TorrentRecord]:
+        """Récupère les torrents en échec à traiter"""
+        try:
+            with self.get_cursor() as cursor:
+                query = """
+                    SELECT * FROM torrents 
+                    WHERE status IN ('magnet_error', 'error', 'virus', 'dead')
+                    AND attempts_count < ?
+                """
+                params = [APP_CONFIG['max_retry_attempts']]
+                
+                if exclude_recent_attempts:
+                    # Exclure les torrents tentés récemment
+                    retry_threshold = datetime.now() - timedelta(hours=APP_CONFIG['retry_delay_hours'])
+                    query += " AND (last_attempt IS NULL OR last_attempt < ?)"
+                    params.append(retry_threshold)
+                
+                query += " ORDER BY priority DESC, last_seen DESC"
+                
+                cursor.execute(query, params)
+                rows = cursor.fetchall()
+                
+                torrents = []
+                for row in rows:
+                    torrents.append(TorrentRecord(
+                        id=row['id'],
+                        hash=row['hash'],
+                        filename=row['filename'],
+                        status=row['status'],
+                        size=row['size'],
+                        added_date=datetime.fromisoformat(row['added_date']),
+                        first_seen=datetime.fromisoformat(row['first_seen']),
+                        last_seen=datetime.fromisoformat(row['last_seen']),
+                        attempts_count=row['attempts_count'],
+                        last_attempt=datetime.fromisoformat(row['last_attempt']) if row['last_attempt'] else None,
+                        last_success=datetime.fromisoformat(row['last_success']) if row['last_success'] else None,
+                        priority=row['priority']
+                    ))
+                
+                return torrents
+                
+        except Exception as e:
+            logger.error(f"Erreur récupération torrents en échec: {e}")
+            return []
+    
+    def record_attempt(self, attempt: AttemptRecord) -> bool:
+        """Enregistre une tentative de réinjection"""
+        try:
+            with self.get_cursor() as cursor:
+                # Insérer la tentative
+                cursor.execute("""
+                    INSERT INTO attempts (
+                        torrent_id, attempt_date, success, error_message,
+                        response_time_ms, api_response
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    attempt.torrent_id,
+                    attempt.attempt_date or datetime.now(),
+                    attempt.success,
+                    attempt.error_message,
+                    attempt.response_time_ms,
+                    attempt.api_response
+                ))
+                
+                # Mettre à jour le torrent
+                update_fields = [
+                    "attempts_count = attempts_count + 1",
+                    "last_attempt = ?"
+                ]
+                update_params = [attempt.attempt_date or datetime.now()]
+                
+                if attempt.success:
+                    update_fields.append("last_success = ?")
+                    update_params.append(attempt.attempt_date or datetime.now())
+                
+                update_params.append(attempt.torrent_id)
+                
+                cursor.execute(f"""
+                    UPDATE torrents SET {', '.join(update_fields)}
+                    WHERE id = ?
+                """, update_params)
+                
+                return True
+                
+        except Exception as e:
+            logger.error(f"Erreur enregistrement tentative {attempt.torrent_id}: {e}")
+            return False
+    
+    def record_metric(self, metric_type: str, metric_name: str, value: float, 
+                     tags: Optional[Dict] = None, aggregation_period: str = None) -> bool:
+        """Enregistre une métrique"""
+        try:
+            with self.get_cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO metrics (
+                        timestamp, metric_type, metric_name, value, tags, aggregation_period
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    datetime.now(),
+                    metric_type,
+                    metric_name,
+                    value,
+                    json.dumps(tags or {}),
+                    aggregation_period
+                ))
+                return True
+                
+        except Exception as e:
+            logger.error(f"Erreur enregistrement métrique {metric_type}.{metric_name}: {e}")
+            return False
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """Récupère les statistiques générales"""
+        try:
+            with self.get_cursor() as cursor:
+                stats = {}
+                
+                # Statistiques des torrents
+                cursor.execute("""
+                    SELECT status, COUNT(*) as count, AVG(size) as avg_size
+                    FROM torrents 
+                    GROUP BY status
+                """)
+                stats['torrents_by_status'] = {row['status']: {
+                    'count': row['count'], 
+                    'avg_size': row['avg_size']
+                } for row in cursor.fetchall()}
+                
+                # Statistiques des tentatives (dernières 24h)
+                yesterday = datetime.now() - timedelta(days=1)
+                cursor.execute("""
+                    SELECT success, COUNT(*) as count, AVG(response_time_ms) as avg_response_time
+                    FROM attempts 
+                    WHERE attempt_date > ?
+                    GROUP BY success
+                """, (yesterday,))
+                stats['attempts_24h'] = {
+                    ('success' if row['success'] else 'failure'): {
+                        'count': row['count'],
+                        'avg_response_time': row['avg_response_time']
+                    } for row in cursor.fetchall()
+                }
+                
+                # Torrents nécessitant intervention
+                cursor.execute("""
+                    SELECT COUNT(*) as count FROM torrents 
+                    WHERE status IN ('magnet_error', 'error', 'virus', 'dead')
+                    AND attempts_count < ?
+                """, (APP_CONFIG['max_retry_attempts'],))
+                stats['pending_reinjection'] = cursor.fetchone()['count']
+                
+                return stats
+                
+        except Exception as e:
+            logger.error(f"Erreur récupération statistiques: {e}")
+            return {}
+    
+    def cleanup_old_data(self) -> Tuple[int, int]:
+        """Nettoie les anciennes données selon la configuration"""
+        try:
+            with self.get_cursor() as cursor:
+                now = datetime.now()
+                
+                # Nettoyer les anciens torrents (gardés pour historique)
+                history_threshold = now - timedelta(days=APP_CONFIG['history_retention_days'])
+                
+                # Supprimer les tentatives anciennes
+                cursor.execute("""
+                    DELETE FROM attempts 
+                    WHERE attempt_date < ?
+                """, (history_threshold,))
+                attempts_deleted = cursor.rowcount
+                
+                # Supprimer les métriques anciennes
+                metrics_threshold = now - timedelta(days=METRICS_CONFIG['retention_days'])
+                cursor.execute("""
+                    DELETE FROM metrics 
+                    WHERE timestamp < ?
+                """, (metrics_threshold,))
+                metrics_deleted = cursor.rowcount
+                
+                # Vacuum pour récupérer l'espace
+                cursor.execute("VACUUM")
+                
+                logger.info(f"Nettoyage: {attempts_deleted} tentatives, {metrics_deleted} métriques supprimées")
+                return attempts_deleted, metrics_deleted
+                
+        except Exception as e:
+            logger.error(f"Erreur nettoyage base de données: {e}")
+            return 0, 0
+    
+    def backup_database(self, backup_path: Optional[Path] = None) -> bool:
+        """Crée une sauvegarde de la base de données"""
+        try:
+            if not backup_path:
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                backup_path = self.db_path.parent / f"rd_manager_backup_{timestamp}.db"
+            
+            with self.get_cursor() as cursor:
+                cursor.execute(f"VACUUM INTO '{backup_path}'")
+            
+            logger.info(f"Sauvegarde créée: {backup_path}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Erreur sauvegarde base de données: {e}")
+            return False
+    
+    def close(self):
+        """Ferme toutes les connexions"""
+        if hasattr(self._local, 'connection'):
+            self._local.connection.close()
+            delattr(self._local, 'connection')
+
+# Instance globale (singleton thread-safe)
+_db_instance = None
+_db_lock = threading.Lock()
+
+def get_database() -> DatabaseManager:
+    """Retourne l'instance de base de données (singleton)"""
+    global _db_instance
+    if _db_instance is None:
+        with _db_lock:
+            if _db_instance is None:
+                _db_instance = DatabaseManager()
+    return _db_instance

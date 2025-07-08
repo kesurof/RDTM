@@ -1,0 +1,54 @@
+# docker-compose.yml
+version: '3.8'
+
+services:
+  rd-manager:
+    build: .
+    container_name: rd-manager
+    restart: unless-stopped
+    
+    environment:
+      - RD_API_TOKEN=${RD_API_TOKEN}
+      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - SCAN_INTERVAL=${SCAN_INTERVAL:-600}
+      - DRY_RUN=${DRY_RUN:-true}
+      - MAX_WORKERS=${MAX_WORKERS:-4}
+    
+    volumes:
+      # Persistance des données
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./config:/app/config
+      # Configuration
+      - ./.env:/app/.env:ro
+    
+    # Ressources limitées
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+          cpus: '0.1'
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('https://api.real-debrid.com/rest/1.0/user', headers={'Authorization': 'Bearer ${RD_API_TOKEN}'}, timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    
+    # Logs structurés
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# Configuration réseau (optionnel)
+networks:
+  default:
+    name: rd-manager-network
