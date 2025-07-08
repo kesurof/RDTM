@@ -143,7 +143,22 @@ class RealDebridManager:
             else:
                 logger.info("✅ Aucun torrent en échec à traiter")
             
-            # 3. Statistiques du cycle
+            # 3. Traiter les retries différés
+            self.performance.checkpoint('retries_start')
+            retries_results = self.torrent_manager.process_pending_retries()
+            retries_duration = self.performance.get_elapsed('retries_start')
+            
+            # Log métriques des retries
+            self.metrics.log_metric('retries', 'duration', retries_duration)
+            self.metrics.log_metric('retries', 'processed', retries_results['processed'])
+            self.metrics.log_metric('retries', 'successful', retries_results['successful'])
+            
+            if retries_results['processed'] > 0:
+                success_rate = (retries_results['successful'] / retries_results['processed']) * 100
+                logger.info(f"🔄 Retries traités: {retries_results['successful']}/{retries_results['processed']} "
+                           f"réussis ({success_rate:.1f}%)")
+
+            # 4. Statistiques du cycle
             cycle_duration = time.time() - cycle_start
             manager_stats = self.torrent_manager.get_manager_stats()
             
