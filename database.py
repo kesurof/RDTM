@@ -144,6 +144,36 @@ class DatabaseManager:
                         status TEXT DEFAULT 'idle'  -- 'idle', 'running', 'completed'
                     )
                 """)
+
+                # Table des échecs permanents (infringing_file, etc.)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS permanent_failures (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        torrent_id TEXT NOT NULL,
+                        filename TEXT NOT NULL,
+                        error_type TEXT NOT NULL,
+                        error_message TEXT,
+                        failure_date TIMESTAMP NOT NULL,
+                        processed BOOLEAN DEFAULT FALSE,
+                        UNIQUE(torrent_id, error_type)
+                    )
+                """)
+                
+                # Table de retry différé (too_many_requests, etc.)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS retry_queue (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        torrent_id TEXT NOT NULL,
+                        filename TEXT NOT NULL,
+                        error_type TEXT NOT NULL,
+                        error_message TEXT,
+                        original_failure TIMESTAMP NOT NULL,
+                        scheduled_retry TIMESTAMP NOT NULL,
+                        retry_count INTEGER DEFAULT 0,
+                        last_retry_attempt TIMESTAMP,
+                        UNIQUE(torrent_id, error_type)
+                    )
+                """)
                 
                 # Index pour les performances
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_torrents_status ON torrents(status)")
@@ -154,6 +184,9 @@ class DatabaseManager:
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON metrics(timestamp)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_metrics_type_name ON metrics(metric_type, metric_name)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_scan_progress_type ON scan_progress(scan_type)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_permanent_failures_date ON permanent_failures(failure_date)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_retry_queue_scheduled ON retry_queue(scheduled_retry)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_retry_queue_torrent ON retry_queue(torrent_id)")
                 
                 logger.info("Base de données initialisée avec succès")
     
