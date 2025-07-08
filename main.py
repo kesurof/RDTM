@@ -93,10 +93,23 @@ class RealDebridManager:
         logger.info("🔄 Début du cycle de traitement")
         
         try:
-            # 1. Scanner les torrents
+            # 1. Scanner les torrents (API)
             self.performance.checkpoint('scan_start')
             scan_success, scan_results = self.torrent_manager.scan_torrents()
             scan_duration = self.performance.get_elapsed('scan_start')
+            
+            # 1.5 Scanner les liens cassés (une fois par jour)
+            symlinks_scanned = False
+            if scan_results.get('scan_mode') == 'full':  # Seulement lors des scans complets
+                try:
+                    logger.info("🔗 Scan symlinks après scan complet")
+                    symlink_success, symlink_results = self.torrent_manager.scan_torrents(scan_mode='symlinks')
+                    if symlink_success:
+                        scan_results['symlinks'] = symlink_results
+                        symlinks_scanned = True
+                        logger.info(f"✅ Symlinks: {symlink_results.get('matched_torrents', 0)} nouveaux torrents détectés")
+                except Exception as e:
+                    logger.error(f"Erreur scan symlinks: {e}")
             
             if not scan_success:
                 logger.error(f"❌ Échec du scan: {scan_results.get('error', 'unknown')}")
