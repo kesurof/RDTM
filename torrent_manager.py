@@ -12,6 +12,7 @@ from database import get_database, TorrentRecord, AttemptRecord
 from rd_client import RealDebridClient
 from torrent_validator import get_validator
 from symlink_checker import get_symlink_checker
+from failure_handler import FailureHandler
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,7 @@ class TorrentManager:
         self.rd_client = RealDebridClient()
         self.validator = get_validator()
         self.symlink_checker = get_symlink_checker()
+        self.failure_handler = FailureHandler(dry_run=dry_run)
         self.database = get_database()
         self.stats = {
             'scans_completed': 0,
@@ -550,6 +552,10 @@ class TorrentManager:
                 
                 # Enregistrer la tentative
                 self.database.record_attempt(attempt)
+                
+                # Traitement post-échec via FailureHandler
+                self._handle_post_failure(torrent, api_error)
+                
                 return False, error
                 
         except Exception as e:
@@ -817,11 +823,54 @@ class TorrentManager:
             return False
         
         return True
+    def _handle_post_failure(self, torrent: TorrentRecord, api_error: str):
+        """Traite les échecs de réinjection via FailureHandler"""
+        try:
+            # Identifier le type d'erreur
+            error_type = self._classify_api_error(api_error)
+            
+            if error_type in ['infringing_file', 'too_many_requests']:
+                logger.info(f"🔧 Post-traitement {error_type} pour: {torrent.filename[:50]}...")
+                
+                success = self.failure_handler.handle_failure(
+                    torrent_id=torrent.id,
+                    filename=torrent.filename,
+                    error_type=error_type,
+                    error_message=api_error
+                )
+                
+                if success:
+                    logger.info(f"✅ Post-traitement {error_type} réussi")
+                else:
+                    logger.warning(f"⚠️ Post-traitement {error_type} partiellement échoué")
+            else:
+                logger.debug(f"Type d'erreur non géré pour post-traitement: {api_error}")
+                
+        except Exception as e:
+            logger.error(f"Erreur post-traitement échec: {e}")
     
+    def _classify_api_error(self, api_error: str) -> str:
+        """Classifie le type d'erreur API"""
+        error_lower = api_error.lower()
+        
+        if 'infringing_file' in error_lower:
+            return 'infringing_file'
+        elif 'too_many_requests' in error_lower:
+            return 'too_many_requests'
+        elif 'rate' in error_lower and 'limit' in error_lower:
+            return 'too_many_requests'
+        else:
+            return 'unknown'
+    
+    def get_pending_retries(self) -> List[Dict]:
+        """Récupère les torrents prêts pour retry depuis FailureHandler"""
+        return self.failure_handler.get_pending_retries()
+
     def close(self):
         """Fermeture propre"""
         try:
             self.rd_client.close()
+            self.failure_handler.close()
             self.database.close()
             logger.info("TorrentManager fermé proprement")
         except Exception as e:
