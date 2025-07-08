@@ -578,9 +578,38 @@ class TorrentManager:
         try:
             # Récupérer les candidats selon le type de scan
             if scan_type == 'symlinks':
-                # Torrents détectés via liens cassés
-                candidates = self.database.get_failed_torrents(exclude_recent_attempts=True)
-                candidates = [t for t in candidates if t.status == 'symlink_broken']
+                # Torrents détectés via liens cassés - requête directe
+                candidates = []
+                try:
+                    with self.database.get_cursor() as cursor:
+                        cursor.execute("""
+                            SELECT * FROM torrents 
+                            WHERE status = 'symlink_broken' 
+                            AND attempts_count < ?
+                            ORDER BY priority DESC, last_seen DESC
+                        """, [APP_CONFIG['max_retry_attempts']])
+                        rows = cursor.fetchall()
+                        
+                        from database import TorrentRecord
+                        from datetime import datetime
+                        for row in rows:
+                            candidates.append(TorrentRecord(
+                                id=row['id'],
+                                hash=row['hash'],
+                                filename=row['filename'],
+                                status=row['status'],
+                                size=row['size'],
+                                added_date=datetime.fromisoformat(row['added_date']),
+                                first_seen=datetime.fromisoformat(row['first_seen']),
+                                last_seen=datetime.fromisoformat(row['last_seen']),
+                                attempts_count=row['attempts_count'],
+                                last_attempt=datetime.fromisoformat(row['last_attempt']) if row['last_attempt'] else None,
+                                last_success=datetime.fromisoformat(row['last_success']) if row['last_success'] else None,
+                                priority=row['priority']
+                            ))
+                except Exception as e:
+                    logger.error(f"Erreur récupération torrents symlink_broken: {e}")
+
             else:
                 # Tous les torrents en échec
                 candidates = self.get_reinjection_candidates()
