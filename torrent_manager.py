@@ -571,6 +571,68 @@ class TorrentManager:
         finally:
             self.stats['reinjections_attempted'] += 1
     
+    def reinject_failed_torrents(self, scan_type: str = 'all', limit: int = None) -> Tuple[bool, Dict[str, Any]]:
+        """Réinjection de torrents en échec avec limite et filtrage"""
+        logger.info(f"🎯 Réinjection de torrents (type: {scan_type}, limite: {limit})")
+        
+        try:
+            # Récupérer les candidats selon le type de scan
+            if scan_type == 'symlinks':
+                # Torrents détectés via liens cassés
+                candidates = self.database.get_failed_torrents(exclude_recent_attempts=True)
+                candidates = [t for t in candidates if t.status == 'symlink_broken']
+            else:
+                # Tous les torrents en échec
+                candidates = self.get_reinjection_candidates()
+            
+            if not candidates:
+                return True, {
+                    'processed': 0,
+                    'success': 0,
+                    'failed': 0,
+                    'message': 'Aucun torrent à réinjecter'
+                }
+            
+            # Limiter le nombre si spécifié
+            if limit and limit > 0:
+                candidates = candidates[:limit]
+                logger.info(f"📊 Limitation à {limit} torrents sur {len(candidates)} candidats")
+            
+            # Traiter les réinjections
+            results = {
+                'processed': 0,
+                'success': 0,
+                'failed': 0,
+                'errors': []
+            }
+            
+            for torrent in candidates:
+                success, message = self.reinject_torrent(torrent)
+                
+                results['processed'] += 1
+                if success:
+                    results['success'] += 1
+                    logger.info(f"✅ Réinjection réussie: {torrent.filename[:50]}...")
+                else:
+                    results['failed'] += 1
+                    results['errors'].append({
+                        'torrent_id': torrent.id,
+                        'filename': torrent.filename,
+                        'error': message
+                    })
+                    logger.error(f"❌ Réinjection échouée: {torrent.filename[:50]}... - {message}")
+            
+            success_rate = (results['success'] / results['processed'] * 100) if results['processed'] > 0 else 0
+            logger.info(f"📊 Réinjection terminée: {results['success']}/{results['processed']} "
+                       f"réussies ({success_rate:.1f}%)")
+            
+            return True, results
+            
+        except Exception as e:
+            error_msg = f"Erreur globale réinjection: {str(e)}"
+            logger.error(error_msg)
+            return False, {'error': error_msg}
+
     def process_reinjections(self) -> Dict[str, Any]:
         """Traite tous les torrents candidats à la réinjection"""
         logger.info("🚀 Début du traitement des réinjections")
