@@ -58,8 +58,8 @@ class FailureHandler:
         logger.info(f"📛 Traitement infringing_file: {filename[:50]}")
         
         try:
-            # 1. Historiser l'échec définitif
-            self._record_permanent_failure(torrent_id, filename, 'infringing_file', error_message)
+            # 1. Marquer comme à traiter (processed = 0)
+            self._record_permanent_failure(torrent_id, filename, 'infringing_file', error_message, processed=False)
             
             # 2. Trouver et supprimer les liens cassés
             deleted_files = self._find_and_delete_broken_symlinks(filename)
@@ -67,6 +67,8 @@ class FailureHandler:
             # 3. Déclencher scan Sonarr/Radarr si des fichiers supprimés
             if deleted_files:
                 self._trigger_media_rescan()
+                # 4. Marquer comme traité (processed = 1)
+                self._mark_as_processed(torrent_id, 'infringing_file')
                 logger.info(f"✅ infringing_file traité: {len(deleted_files)} fichiers supprimés")
                 return True
             else:
@@ -253,7 +255,7 @@ class FailureHandler:
         
         return success
     
-    def _record_permanent_failure(self, torrent_id: str, filename: str, error_type: str, error_message: str):
+    def _record_permanent_failure(self, torrent_id: str, filename: str, error_type: str, error_message: str, processed: bool = True):
         """Enregistre un échec permanent en base"""
         try:
             with self.database.get_cursor() as cursor:
@@ -262,12 +264,27 @@ class FailureHandler:
                         torrent_id, filename, error_type, error_message, 
                         failure_date, processed
                     ) VALUES (?, ?, ?, ?, ?, ?)
-                """, (torrent_id, filename, error_type, error_message, datetime.now(), True))
+                """, (torrent_id, filename, error_type, error_message, datetime.now(), processed))
                 
-                logger.debug(f"Échec permanent enregistré: {torrent_id}")
+                logger.debug(f"Échec permanent enregistré: {torrent_id} (processed={processed})")
                 
         except Exception as e:
             logger.error(f"Erreur enregistrement échec permanent: {e}")
+    
+    def _mark_as_processed(self, torrent_id: str, error_type: str):
+        """Marque un échec comme traité"""
+        try:
+            with self.database.get_cursor() as cursor:
+                cursor.execute("""
+                    UPDATE permanent_failures 
+                    SET processed = 1 
+                    WHERE torrent_id = ? AND error_type = ?
+                """, (torrent_id, error_type))
+                
+                logger.debug(f"Échec marqué comme traité: {torrent_id}")
+                
+        except Exception as e:
+            logger.error(f"Erreur marquage traité: {e}")
     
     def _schedule_retry(self, torrent_id: str, filename: str, error_type: str, retry_time: datetime, error_message: str):
         """Programme un retry différé"""
