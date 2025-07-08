@@ -132,6 +132,10 @@ class SymlinkChecker:
     def scan_directory(self, directory_path: str) -> List[BrokenSymlink]:
         """Scanne un répertoire pour les liens cassés"""
         logger.info(f"🔍 Scan des liens symboliques dans: {directory_path}")
+
+        # Vérifier si shutdown demandé
+        from utils import get_signal_handler
+        signal_handler = get_signal_handler()
         
         if not os.path.exists(directory_path):
             logger.error(f"Répertoire inexistant: {directory_path}")
@@ -161,6 +165,13 @@ class SymlinkChecker:
             
             completed = 0
             for future in as_completed(future_to_symlink):
+                # Vérifier shutdown à chaque itération
+                if signal_handler.is_shutdown_requested():
+                    logger.info("🛑 Arrêt demandé - interruption scan symlinks")
+                    # Annuler les futures en attente
+                    for remaining_future in future_to_symlink:
+                        remaining_future.cancel()
+                    break
                 try:
                     result = future.result()
                     self.stats['total_analyzed'] += 1
