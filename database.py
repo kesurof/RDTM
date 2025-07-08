@@ -132,13 +132,16 @@ class DatabaseManager:
                     )
                 """)
                 
-                # Table de configuration
+                # Table de progression des scans
                 cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS config (
-                        key TEXT PRIMARY KEY,
-                        value TEXT NOT NULL,
-                        updated_at TIMESTAMP NOT NULL,
-                        description TEXT
+                    CREATE TABLE IF NOT EXISTS scan_progress (
+                        id INTEGER PRIMARY KEY,
+                        scan_type TEXT NOT NULL,  -- 'quick' ou 'full'
+                        current_offset INTEGER DEFAULT 0,
+                        total_expected INTEGER DEFAULT 0,
+                        last_scan_start TIMESTAMP,
+                        last_scan_complete TIMESTAMP,
+                        status TEXT DEFAULT 'idle'  -- 'idle', 'running', 'completed'
                     )
                 """)
                 
