@@ -149,7 +149,7 @@ class RealDebridClient:
             response_time = int((time.time() - start_time) * 1000)
             
             # Analyser la réponse
-            if response.status_code == 200:
+            if response.status_code in [200, 201]:  # 200=OK, 201=Created (tous deux succès)
                 self._update_rate_limit(True, response.status_code)
                 try:
                     data = response.json()
