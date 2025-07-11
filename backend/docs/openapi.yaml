@@ -1,0 +1,436 @@
+openapi: 3.0.3
+info:
+  title: RDTM API
+  description: Real-Debrid Torrent Manager API
+  version: 1.0.0
+  contact:
+    name: RDTM Support
+    email: support@rdtm.example.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:8000/api/v1
+    description: Development server
+  - url: https://api.rdtm.example.com/v1
+    description: Production server
+
+security:
+  - bearerAuth: []
+
+paths:
+  /auth/login:
+    post:
+      tags:
+        - Authentication
+      summary: Connexion utilisateur
+      description: Authentifie un utilisateur et retourne un token JWT
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - username
+                - password
+              properties:
+                username:
+                  type: string
+                  example: "user@example.com"
+                password:
+                  type: string
+                  format: password
+                  example: "password123"
+      responses:
+        '200':
+          description: Connexion réussie
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token:
+                    type: string
+                    example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  token_type:
+                    type: string
+                    example: "bearer"
+                  expires_in:
+                    type: integer
+                    example: 86400
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /user/profile:
+    get:
+      tags:
+        - User
+      summary: Profil utilisateur
+      description: Récupère les informations du profil utilisateur
+      responses:
+        '200':
+          description: Profil utilisateur
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /torrents:
+    get:
+      tags:
+        - Torrents
+      summary: Liste des torrents
+      description: Récupère la liste des torrents de l'utilisateur
+      parameters:
+        - name: offset
+          in: query
+          description: Décalage pour la pagination
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: limit
+          in: query
+          description: Nombre d'éléments par page
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: status
+          in: query
+          description: Filtrer par statut
+          schema:
+            type: string
+            enum: [waiting_files_selection, queued, downloading, downloaded, error, virus, compressing, uploading, dead]
+      responses:
+        '200':
+          description: Liste des torrents
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  torrents:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Torrent'
+                  total:
+                    type: integer
+                    example: 150
+                  offset:
+                    type: integer
+                    example: 0
+                  limit:
+                    type: integer
+                    example: 50
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+    post:
+      tags:
+        - Torrents
+      summary: Ajouter un torrent
+      description: Ajoute un nouveau torrent via magnet link ou fichier
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - torrent
+              properties:
+                torrent:
+                  type: string
+                  description: Magnet link ou données du fichier torrent
+                  example: "magnet:?xt=urn:btih:..."
+      responses:
+        '201':
+          description: Torrent ajouté avec succès
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Torrent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /torrents/{torrentId}:
+    get:
+      tags:
+        - Torrents
+      summary: Détails d'un torrent
+      description: Récupère les détails d'un torrent spécifique
+      parameters:
+        - name: torrentId
+          in: path
+          required: true
+          description: ID du torrent
+          schema:
+            type: string
+            example: "ABCD1234567890"
+      responses:
+        '200':
+          description: Détails du torrent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TorrentDetails'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    delete:
+      tags:
+        - Torrents
+      summary: Supprimer un torrent
+      description: Supprime un torrent de la liste
+      parameters:
+        - name: torrentId
+          in: path
+          required: true
+          description: ID du torrent
+          schema:
+            type: string
+            example: "ABCD1234567890"
+      responses:
+        '204':
+          description: Torrent supprimé avec succès
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /torrents/{torrentId}/select-files:
+    post:
+      tags:
+        - Torrents
+      summary: Sélectionner les fichiers
+      description: Sélectionne les fichiers à télécharger pour un torrent
+      parameters:
+        - name: torrentId
+          in: path
+          required: true
+          description: ID du torrent
+          schema:
+            type: string
+            example: "ABCD1234567890"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - files
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: string
+                  description: IDs des fichiers à sélectionner
+                  example: ["1", "3", "5"]
+      responses:
+        '200':
+          description: Fichiers sélectionnés avec succès
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "success"
+                  message:
+                    type: string
+                    example: "Files selected successfully"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    UserProfile:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 123
+        username:
+          type: string
+          example: "user@example.com"
+        email:
+          type: string
+          format: email
+          example: "user@example.com"
+        premium:
+          type: integer
+          description: Timestamp d'expiration du premium
+          example: 1672531200
+        points:
+          type: integer
+          description: Points Real-Debrid disponibles
+          example: 1500
+
+    Torrent:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "ABCD1234567890"
+        filename:
+          type: string
+          example: "example.torrent"
+        hash:
+          type: string
+          example: "abcd1234567890abcd1234567890abcd12345678"
+        bytes:
+          type: integer
+          description: Taille en bytes
+          example: 1073741824
+        progress:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+          description: Progression en pourcentage
+          example: 75.5
+        status:
+          type: string
+          enum: [waiting_files_selection, queued, downloading, downloaded, error, virus, compressing, uploading, dead]
+          example: "downloading"
+        added:
+          type: string
+          format: date-time
+          description: Date d'ajout
+          example: "2023-12-01T10:30:00Z"
+        links:
+          type: array
+          items:
+            type: string
+            format: uri
+          description: Liens de téléchargement disponibles
+          example: ["https://download.real-debrid.com/d/ABCD1234567890/file1.mp4"]
+
+    TorrentDetails:
+      allOf:
+        - $ref: '#/components/schemas/Torrent'
+        - type: object
+          properties:
+            files:
+              type: array
+              items:
+                $ref: '#/components/schemas/TorrentFile'
+            original_filename:
+              type: string
+              example: "original_torrent_name.torrent"
+            original_bytes:
+              type: integer
+              example: 1073741824
+
+    TorrentFile:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        path:
+          type: string
+          example: "/Movie/example.mp4"
+        bytes:
+          type: integer
+          example: 536870912
+        selected:
+          type: integer
+          description: 1 si sélectionné, 0 sinon
+          example: 1
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Message d'erreur
+          example: "Invalid request"
+        details:
+          type: string
+          description: Détails supplémentaires
+          example: "The provided torrent data is invalid"
+        code:
+          type: string
+          description: Code d'erreur
+          example: "INVALID_TORRENT"
+
+  responses:
+    BadRequest:
+      description: Requête invalide
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: "Bad Request"
+            details: "Invalid parameters provided"
+            code: "BAD_REQUEST"
+
+    Unauthorized:
+      description: Non autorisé - Token manquant ou invalide
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: "Unauthorized"
+            details: "Invalid or missing authentication token"
+            code: "UNAUTHORIZED"
+
+    NotFound:
+      description: Ressource non trouvée
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: "Not Found"
+            details: "The requested torrent was not found"
+            code: "NOT_FOUND"
+
+    RateLimited:
+      description: Limite de taux dépassée
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: "Rate Limit Exceeded"
+            details: "Too many requests. Please try again later."
+            code: "RATE_LIMITED"
+      headers:
+        Retry-After:
+          description: Nombre de secondes à attendre avant de réessayer
+          schema:
+            type: integer
+            example: 60
