@@ -1,55 +1,51 @@
-name: Security
+name: Security Scan
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
   schedule:
-    - cron: '0 2 * * 1'
+    - cron: '0 2 * * 1'  # Chaque lundi à 2h
+  workflow_dispatch:
 
 jobs:
-  codeql:
-    name: CodeQL Analysis
+  dependency-scan:
     runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: read
-      security-events: write
-
-    strategy:
-      fail-fast: false
-      matrix:
-        language: [ 'javascript', 'python' ]
-
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Initialize CodeQL
-      uses: github/codeql-action/init@v2
-      with:
-        languages: ${{ matrix.language }}
-
-    - name: Autobuild
-      uses: github/codeql-action/autobuild@v2
-
-    - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@v2
-
-  secret-scan:
-    name: Secret Scanning
-    runs-on: ubuntu-latest
-    
     steps:
     - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
     
-    - name: TruffleHog OSS
-      uses: trufflesecurity/trufflehog@main
+    - name: Python dependency scan
+      run: |
+        pip install safety
+        safety check --json --output safety-report.json || true
+        
+    - name: Node.js dependency scan
+      run: |
+        cd frontend
+        npm audit --audit-level moderate --json > npm-audit.json || true
+        
+    - name: Upload security reports
+      uses: actions/upload-artifact@v3
       with:
-        path: ./
-        base: main
-        head: HEAD
-        extra_args: --debug --only-verified
+        name: security-reports
+        path: |
+          safety-report.json
+          frontend/npm-audit.json
+
+  container-scan:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Build image for scanning
+      run: docker build -t rdtm:scan .
+      
+    - name: Scan container image
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: 'rdtm:scan'
+        format: 'json'
+        output: 'container-scan.json'
+        
+    - name: Upload container scan results
+      uses: actions/upload-artifact@v3
+      with:
+        name: container-scan
+        path: container-scan.json

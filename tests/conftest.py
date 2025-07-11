@@ -1,70 +1,80 @@
+"""Configuration globale des tests pytest"""
+
 import pytest
-import asyncio
-import os
-from unittest.mock import Mock, AsyncMock
-import redis
-from backend.core.security import SecurityManager
-from backend.services.real_debrid_service import RealDebridService
+from django.test import TestCase
+from django.contrib.auth import get_user_model
+from rest_framework.test import APIClient
+from unittest.mock import Mock, patch
+
+User = get_user_model()
 
 @pytest.fixture
-def event_loop():
-    """Fixture pour les tests async"""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
+def api_client():
+    """Client API pour les tests"""
+    return APIClient()
 
 @pytest.fixture
-def mock_redis():
-    """Mock Redis pour les tests"""
-    mock_redis = Mock(spec=redis.Redis)
-    mock_redis.get.return_value = None
-    mock_redis.set.return_value = True
-    mock_redis.setex.return_value = True
-    mock_redis.incr.return_value = 1
-    mock_redis.expire.return_value = True
-    return mock_redis
+def user():
+    """Utilisateur de test"""
+    return User.objects.create_user(
+        username='testuser',
+        email='test@example.com',
+        password='testpass123'
+    )
 
 @pytest.fixture
-def security_manager():
-    """Fixture pour SecurityManager"""
-    os.environ.update({
-        'JWT_SECRET_KEY': 'test_secret_key_for_testing_only',
-        'JWT_ALGORITHM': 'HS256',
-        'JWT_EXPIRATION_HOURS': '24',
-        'ENCRYPTION_KEY': 'test_encryption_key_32_bytes_long!',
-        'REDIS_URL': 'redis://localhost:6379'
-    })
-    return SecurityManager()
+def admin_user():
+    """Utilisateur admin de test"""
+    return User.objects.create_superuser(
+        username='admin',
+        email='admin@example.com',
+        password='adminpass123'
+    )
 
 @pytest.fixture
-def mock_real_debrid_service():
-    """Mock pour RealDebridService"""
-    service = Mock(spec=RealDebridService)
-    service.get_user_info = AsyncMock(return_value={'id': 123, 'username': 'testuser'})
-    service.get_torrents = AsyncMock(return_value={'torrents': []})
-    service.add_torrent = AsyncMock(return_value={'id': 'torrent123'})
-    return service
+def authenticated_client(api_client, user):
+    """Client API authentifié"""
+    api_client.force_authenticate(user=user)
+    return api_client
 
 @pytest.fixture
-def sample_user_data():
-    """Données utilisateur de test"""
-    return {
-        'id': 1,
-        'username': 'testuser',
-        'email': 'test@example.com',
-        'api_key': 'test_api_key'
-    }
+def mock_real_debrid_api():
+    """Mock de l'API Real-Debrid"""
+    with patch('app.services.real_debrid.RealDebridAPI') as mock:
+        mock_instance = Mock()
+        mock.return_value = mock_instance
+        
+        # Réponses par défaut
+        mock_instance.get_user_info.return_value = {
+            'id': 12345,
+            'username': 'testuser',
+            'email': 'test@example.com',
+            'points': 1000,
+            'locale': 'en',
+            'avatar': 'https://example.com/avatar.jpg',
+            'type': 'premium',
+            'premium': 1640995200,  # timestamp
+            'expiration': '2025-12-31T23:59:59.000Z'
+        }
+        
+        mock_instance.add_magnet.return_value = {
+            'id': 'ABCD1234',
+            'uri': 'https://real-debrid.com/d/ABCD1234'
+        }
+        
+        yield mock_instance
 
 @pytest.fixture
 def sample_torrent_data():
-    """Données torrent de test"""
+    """Données de test pour un torrent"""
     return {
-        'id': 'torrent123',
-        'filename': 'test_torrent.torrent',
-        'status': 'downloaded',
-        'progress': 100,
-        'files': [
-            {'id': 1, 'path': '/test/file1.mp4', 'bytes': 1024000},
-            {'id': 2, 'path': '/test/file2.mp4', 'bytes': 2048000}
-        ]
+        'magnet_link': 'magnet:?xt=urn:btih:1234567890abcdef1234567890abcdef12345678',
+        'name': 'Test Torrent',
+        'size': 1073741824,  # 1GB
+        'priority': 'normal'
     }
+
+@pytest.fixture(autouse=True)
+def enable_db_access_for_all_tests(db):
+    """Permet l'accès à la DB pour tous les tests"""
+    pass

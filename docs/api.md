@@ -1,48 +1,88 @@
-# RDTM API Documentation
+# Documentation API RDTM
 
-## Endpoints
+## Authentification
 
-### POST /api/torrents/add
-Ajouter un torrent à la queue de téléchargement.
+### POST /api/auth/login
+Authentification utilisateur
 
-**Request Body:**
+**Request:**
+
 {
-"magnet_link": "magnet:?xt=urn:btih:...",
-"name": "Nom du torrent (optionnel)"
-}
-**Response:**
-{
-"success": true,
-"job_id": "uuid-du-job",
-"message": "Torrent ajouté à la queue"
+"username": "string",
+"password": "string"
 }
 
-### GET /api/torrents/status
-Obtenir le statut de la queue des torrents.
 
 **Response:**
+
 {
-"queued": 5,
-"active": 2,
-"max_concurrent": 10,
-"jobs": [
+"access_token": "string",
+"token_type": "bearer",
+"expires_in": 3600
+}
+
+
+## Gestion des Torrents
+
+### GET /api/torrents/
+Liste tous les torrents
+
+**Headers:**
+- `Authorization: Bearer {token}`
+
+**Response:**
+
 {
-"id": "job-uuid",
-"name": "Nom du torrent",
-"status": "downloading",
-"progress": 45.5,
-"created_at": "2025-07-11T16:13:00Z"
+"torrents": [
+{
+"id": "string",
+"name": "string",
+"status": "downloading|completed|error",
+"progress": 75.5,
+"size": 1073741824,
+"created_at": "2025-07-11T16:27:00Z"
 }
 ]
 }
 
-### DELETE /api/torrents/{job_id}
-Annuler un torrent en cours ou en queue.
+
+### POST /api/torrents/
+Ajouter un nouveau torrent
+
+**Request:**
+
+{
+"magnet_link": "magnet:?xt=urn:btih:...",
+"priority": "normal|high|low"
+}
+
+
+### GET /api/torrents/{id}
+Détails d'un torrent spécifique
+
+### DELETE /api/torrents/{id}
+Supprimer un torrent
+
+## Téléchargements
+
+### GET /api/downloads/
+Liste des téléchargements actifs
+
+### GET /api/downloads/{id}/stream
+Stream direct d'un fichier
+
+## Statistiques
+
+### GET /api/stats/
+Statistiques globales du système
 
 **Response:**
 
 {
-"success": true,
-"message": "Torrent annulé"
+"total_downloads": 150,
+"active_downloads": 5,
+"total_size": 107374182400,
+"api_quota_remaining": 85
 }
+
 undefined
