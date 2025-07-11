@@ -1,6 +1,7 @@
-from fastapi import WebSocket
-from typing import List, Dict, Any
 import json
+import asyncio
+from typing import List
+from fastapi import WebSocket, WebSocketDisconnect
 import logging
 
 logger = logging.getLogger(__name__)
@@ -8,103 +9,59 @@ logger = logging.getLogger(__name__)
 class WebSocketManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
-    
+        self._lock = asyncio.Lock()
+
     async def connect(self, websocket: WebSocket):
-        """Accept new WebSocket connection"""
         await websocket.accept()
-        self.active_connections.append(websocket)
+        async with self._lock:
+            self.active_connections.append(websocket)
         logger.info(f"WebSocket connected. Total connections: {len(self.active_connections)}")
-    
+
     def disconnect(self, websocket: WebSocket):
-        """Remove WebSocket connection"""
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
+        async def _disconnect():
+            async with self._lock:
+                if websocket in self.active_connections:
+                    self.active_connections.remove(websocket)
             logger.info(f"WebSocket disconnected. Total connections: {len(self.active_connections)}")
-    
-    async def send_personal_message(self, message: Dict[Any, Any], websocket: WebSocket):
-        """Send message to specific WebSocket"""
+        
+        # Schedule the coroutine to run
+        asyncio.create_task(_disconnect())
+
+    async def send_personal_message(self, message: str, websocket: WebSocket):
         try:
-            await websocket.send_text(json.dumps(message))
-        except Exception as e:
-            logger.error(f"Failed to send personal message: {e}")
+            await websocket.send_text(message)
+        except WebSocketDisconnect:
             self.disconnect(websocket)
-    
-    async def broadcast(self, message: Dict[Any, Any]):
-        """Broadcast message to all connected clients"""
+        except Exception as e:
+            logger.error(f"Error sending personal message: {e}")
+            self.disconnect(websocket)
+
+    async def broadcast(self, data: dict):
         if not self.active_connections:
             return
-            
-        message_text = json.dumps(message)
+        
+        message = json.dumps(data)
         disconnected = []
         
-        for connection in self.active_connections:
+        async with self._lock:
+            connections_copy = self.active_connections.copy()
+        
+        for connection in connections_copy:
             try:
-                await connection.send_text(message_text)
+                await connection.send_text(message)
+            except WebSocketDisconnect:
+                disconnected.append(connection)
             except Exception as e:
-                logger.error(f"Failed to broadcast to client: {e}")
+                logger.error(f"Error broadcasting to connection: {e}")
                 disconnected.append(connection)
         
-        # Remove disconnected clients
-        for connection in disconnected:
-            self.disconnect(connection)
-    
-    async def broadcast_scan_start(self, mode: str):
-        """Broadcast scan start event"""
-        await self.broadcast({
-            "type": "scan_start",
-            "mode": mode,
-            "timestamp": "2024-01-01T00:00:00Z"
-        })
-    
-    async def broadcast_scan_progress(self, processed: int, failed: int):
-        """Broadcast scan progress"""
-        await self.broadcast({
-            "type": "scan_progress",
-            "processed": processed,
-            "failed": failed,
-            "timestamp": "2024-01-01T00:00:00Z"
-        })
-    
-    async def broadcast_scan_complete(self, result: Dict[Any, Any]):
-        """Broadcast scan completion"""
-        await self.broadcast({
-            "type": "scan_complete",
-            **result,
-            "timestamp": "2024-01-01T00:00:00Z"
-        })
-    
-    async def broadcast_reinject_start(self, torrent_id: str, filename: str):
-        """Broadcast reinject start"""
-        await self.broadcast({
-            "type": "reinject_start",
-            "torrent_id": torrent_id,
-            "filename": filename[:50],
-            "timestamp": "2024-01-01T00:00:00Z"
-        })
-    
-    async def broadcast_reinject_complete(self, result: Dict[Any, Any]):
-        """Broadcast reinject completion"""
-        await self.broadcast({
-            "type": "reinject_complete",
-            **result,
-            "timestamp": "2024-01-01T00:00:00Z"
-        })
-    
-    async def broadcast_symlink_scan_start(self, path: str):
-        """Broadcast symlink scan start"""
-        await self.broadcast({
-            "type": "symlink_scan_start",
-            "path": path,
-            "timestamp": "2024-01-01T00:00:00Z"
-        })
-    
-    async def broadcast_symlink_scan_complete(self, result: Dict[Any, Any]):
-        """Broadcast symlink scan completion"""
-        await self.broadcast({
-            "type": "symlink_scan_complete",
-            **result,
-            "timestamp": "2024-01-01T00:00:00Z"
-        })
+        # Clean up disconnected connections
+        if disconnected:
+            async with self._lock:
+                for conn in disconnected:
+                    if conn in self.active_connections:
+                        self.active_connections.remove(conn)
+            logger.info(f"Cleaned up {len(disconnected)} disconnected connections")
 
-# Global WebSocket manager instance
+# Global instance
 websocket_manager = WebSocketManager()

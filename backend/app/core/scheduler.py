@@ -1,101 +1,70 @@
+import asyncio
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+from apscheduler.executors.asyncio import AsyncIOExecutor
 import logging
-from datetime import datetime
-
-from app.core.config import settings
-from app.services.torrent_service import TorrentService
-from app.services.symlink_service import SymlinkService
-from app.db.database import SessionLocal
 
 logger = logging.getLogger(__name__)
 
-class SchedulerService:
+class SchedulerManager:
     def __init__(self):
-        self.scheduler = AsyncIOScheduler()
-        self.torrent_service = TorrentService()
-        self.symlink_service = SymlinkService()
+        # Configuration APScheduler avec persistance SQLite
+        jobstores = {
+            'default': SQLAlchemyJobStore(url='sqlite:///./data/jobs.sqlite')
+        }
         
-    def start(self):
-        """Start the scheduler with periodic tasks"""
-        # Quick scan every scan_interval_minutes
-        self.scheduler.add_job(
-            self._periodic_scan,
-            IntervalTrigger(minutes=settings.scan_interval_minutes),
-            id="periodic_scan",
-            name="Periodic Quick Scan"
+        executors = {
+            'default': AsyncIOExecutor()
+        }
+        
+        job_defaults = {
+            'coalesce': False,
+            'max_instances': 1
+        }
+        
+        self.scheduler = AsyncIOScheduler(
+            jobstores=jobstores,
+            executors=executors,
+            job_defaults=job_defaults,
+            timezone='UTC'
         )
         
-        # Auto-reinject failed torrents every hour
-        self.scheduler.add_job(
-            self._auto_reinject,
-            IntervalTrigger(hours=1),
-            id="auto_reinject",
-            name="Auto Reinject Failed Torrents"
-        )
-        
-        # Symlink scan every 6 hours
-        self.scheduler.add_job(
-            self._periodic_symlink_scan,
-            IntervalTrigger(hours=6),
-            id="symlink_scan",
-            name="Periodic Symlink Scan"
-        )
-        
-        self.scheduler.start()
-        logger.info("Scheduler started with periodic tasks")
-    
-    def shutdown(self):
-        """Shutdown the scheduler"""
-        if self.scheduler.running:
-            self.scheduler.shutdown()
-            logger.info("Scheduler shutdown")
-    
-    async def _periodic_scan(self):
-        """Periodic quick scan for failed torrents"""
-        db = SessionLocal()
-        try:
-            logger.info("Starting periodic quick scan")
-            await self.torrent_service.scan_torrents(db, "quick")
-            logger.info("Periodic quick scan completed")
-        except Exception as e:
-            logger.error(f"Periodic scan failed: {e}")
-        finally:
-            db.close()
-    
-    async def _auto_reinject(self):
-        """Auto-reinject failed torrents that haven't been retried recently"""
-        db = SessionLocal()
-        try:
-            failed_torrents = self.torrent_service.get_failed_torrents(db, limit=20)
-            
-            if failed_torrents:
-                logger.info(f"Auto-reinjecting {len(failed_torrents)} failed torrents")
-                
-                for torrent in failed_torrents:
-                    try:
-                        await self.torrent_service.reinject_torrent(db, torrent.id)
-                    except Exception as e:
-                        logger.error(f"Auto-reinject failed for {torrent.id}: {e}")
-                        
-                logger.info("Auto-reinject completed")
-        except Exception as e:
-            logger.error(f"Auto-reinject failed: {e}")
-        finally:
-            db.close()
-    
-    async def _periodic_symlink_scan(self):
-        """Periodic symlink scan"""
-        db = SessionLocal()
-        try:
-            logger.info("Starting periodic symlink scan")
-            await self.symlink_service.scan_broken_symlinks(db)
-            await self.symlink_service.match_symlinks_to_torrents(db)
-            logger.info("Periodic symlink scan completed")
-        except Exception as e:
-            logger.error(f"Periodic symlink scan failed: {e}")
-        finally:
-            db.close()
+        self._started = False
 
-# Global scheduler instance
-scheduler = SchedulerService()
+    async def start(self):
+        if not self._started:
+            self.scheduler.start()
+            self._started = True
+            logger.info("APScheduler started")
+
+    async def shutdown(self):
+        if self._started:
+            self.scheduler.shutdown(wait=True)
+            self._started = False
+            logger.info("APScheduler stopped")
+
+    def add_scan_job(self, scan_interval_minutes: int):
+        """Ajoute le job de scan périodique"""
+        from app.services.torrent_service import TorrentService
+        from app.db.database import SessionLocal
+        
+        async def scan_job():
+            service = TorrentService()
+            with SessionLocal() as db:
+                try:
+                    await service.scan_torrents(db, mode="quick")
+                    logger.info("Scheduled scan completed")
+                except Exception as e:
+                    logger.error(f"Scheduled scan failed: {e}")
+        
+        self.scheduler.add_job(
+            scan_job,
+            'interval',
+            minutes=scan_interval_minutes,
+            id='torrent_scan',
+            replace_existing=True
+        )
+        logger.info(f"Scheduled torrent scan every {scan_interval_minutes} minutes")
+
+# Global instance
+scheduler = SchedulerManager()

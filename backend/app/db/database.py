@@ -1,24 +1,35 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-import os
-
 from app.core.config import settings
 
-# Ensure data directory exists
-os.makedirs("data", exist_ok=True)
-
+# Configuration SQLite WAL mode pour la concurrence
 engine = create_engine(
     settings.database_url,
-    connect_args={"check_same_thread": False}  # SQLite specific
+    connect_args={
+        "check_same_thread": False,
+        "timeout": 30
+    },
+    pool_pre_ping=True,
+    pool_recycle=300
 )
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# Configure WAL mode et optimisations SQLite
+@event.listens_for(engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    # Mode WAL pour la concurrence
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.execute("PRAGMA cache_size=10000")
+    cursor.execute("PRAGMA temp_store=memory")
+    cursor.execute("PRAGMA mmap_size=268435456")  # 256MB
+    cursor.close()
 
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 def get_db():
-    """Database dependency"""
     db = SessionLocal()
     try:
         yield db
@@ -27,5 +38,4 @@ def get_db():
 
 async def init_db():
     """Initialize database tables"""
-    from app.db.models import Base
     Base.metadata.create_all(bind=engine)

@@ -1,5 +1,7 @@
 import os
 import time
+import asyncio
+import aiofiles
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 from sqlalchemy.orm import Session
@@ -8,14 +10,16 @@ from difflib import SequenceMatcher
 from app.db.models import BrokenSymlink, Torrent
 from app.core.config import settings
 from app.core.websocket import websocket_manager
+import logging
 
+logger = logging.getLogger(__name__)
 
 class SymlinkService:
     def __init__(self):
         self.media_path = settings.media_path
     
     async def scan_broken_symlinks(self, db: Session, path: str = None) -> Dict:
-        """Scan for broken symlinks in media directories"""
+        """Scan for broken symlinks with async I/O"""
         scan_path = path or self.media_path
         
         await websocket_manager.broadcast({"type": "symlink_scan_start", "path": scan_path})
@@ -24,33 +28,34 @@ class SymlinkService:
         broken_links = []
         
         try:
+            # Use asyncio for concurrent file system operations
+            tasks = []
             for root, dirs, files in os.walk(scan_path):
                 for file in files:
                     full_path = os.path.join(root, file)
-                    
                     if os.path.islink(full_path):
-                        target = os.readlink(full_path)
-                        
-                        # Check if broken
-                        if not os.path.exists(full_path):
-                            torrent_name = self._extract_torrent_name(target)
-                            
-                            broken_link = BrokenSymlink(
-                                source_path=full_path,
-                                target_path=target,
-                                torrent_name=torrent_name,
-                                status="BROKEN",
-                                size=0
-                            )
-                            
-                            # Check if already exists
-                            existing = db.query(BrokenSymlink).filter_by(
-                                source_path=full_path
-                            ).first()
-                            
-                            if not existing:
-                                db.add(broken_link)
-                                broken_links.append(broken_link)
+                        tasks.append(self._check_symlink(full_path))
+            
+            # Process symlinks concurrently
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            for result in results:
+                if isinstance(result, dict) and result.get("broken"):
+                    # Check if already exists
+                    existing = db.query(BrokenSymlink).filter_by(
+                        source_path=result["source_path"]
+                    ).first()
+                    
+                    if not existing:
+                        broken_link = BrokenSymlink(
+                            source_path=result["source_path"],
+                            target_path=result["target_path"],
+                            torrent_name=result["torrent_name"],
+                            status="BROKEN",
+                            size=result.get("size", 0)
+                        )
+                        db.add(broken_link)
+                        broken_links.append(broken_link)
             
             db.commit()
             duration = time.time() - start_time
@@ -70,15 +75,49 @@ class SymlinkService:
             return result
             
         except Exception as e:
+            logger.error(f"Symlink scan failed: {e}")
             await websocket_manager.broadcast({
                 "type": "symlink_scan_error",
                 "error": str(e)
             })
             raise
     
+    async def _check_symlink(self, symlink_path: str) -> Dict:
+        """Check if symlink is broken with async I/O"""
+        try:
+            target = os.readlink(symlink_path)
+            
+            # Check if target exists
+            if not os.path.exists(symlink_path):
+                torrent_name = self._extract_torrent_name(target)
+                
+                # Try to get file size asynchronously
+                size = 0
+                try:
+                    if os.path.exists(target):
+                        stat = await asyncio.get_event_loop().run_in_executor(
+                            None, os.stat, target
+                        )
+                        size = stat.st_size
+                except:
+                    pass
+                
+                return {
+                    "broken": True,
+                    "source_path": symlink_path,
+                    "target_path": target,
+                    "torrent_name": torrent_name,
+                    "size": size
+                }
+            
+            return {"broken": False}
+            
+        except Exception as e:
+            logger.error(f"Error checking symlink {symlink_path}: {e}")
+            return {"broken": False}
+    
     def _extract_torrent_name(self, target_path: str) -> str:
         """Extract torrent name from Zurg path"""
-        # Pattern: /path/to/zurg/torrents/TORRENT_NAME/file
         parts = target_path.split('/')
         
         try:
@@ -88,11 +127,10 @@ class SymlinkService:
         except ValueError:
             pass
         
-        # Fallback: use directory name
         return os.path.basename(os.path.dirname(target_path))
     
     async def match_symlinks_to_torrents(self, db: Session) -> Dict:
-        """Match broken symlinks to Real-Debrid torrents"""
+        """Match broken symlinks to Real-Debrid torrents with batch processing"""
         await websocket_manager.broadcast({"type": "symlink_match_start"})
         
         start_time = time.time()
@@ -103,93 +141,31 @@ class SymlinkService:
             matched_torrent_id=None
         ).all()
         
+        # Get all torrents once for efficiency
+        all_torrents = db.query(Torrent).all()
+        torrent_lookup = {self._clean_name(t.filename): t for t in all_torrents}
+        
         matched_count = 0
+        batch_size = 100
         
-        for symlink in broken_symlinks:
-            # Find matching torrent
-            torrent = self._find_matching_torrent(db, symlink.torrent_name)
+        # Process symlinks in batches
+        for i in range(0, len(broken_symlinks), batch_size):
+            batch = broken_symlinks[i:i + batch_size]
             
-            if torrent:
-                symlink.matched_torrent_id = torrent.id
-                matched_count += 1
+            for symlink in batch:
+                # Find matching torrent
+                torrent = self._find_matching_torrent_optimized(
+                    symlink.torrent_name, 
+                    torrent_lookup, 
+                    all_torrents
+                )
                 
-                # Update torrent status for processing
-                torrent.status = "symlink_broken"
-                torrent.priority = 3  # High priority
-        
-        db.commit()
-        
-        duration = time.time() - start_time
-        
-        result = {
-            "total_symlinks": len(broken_symlinks),
-            "matched_count": matched_count,
-            "match_rate": (matched_count / len(broken_symlinks) * 100) if broken_symlinks else 0,
-            "duration": duration,
-            "success": True
-        }
-        
-        await websocket_manager.broadcast({
-            "type": "symlink_match_complete",
-            **result
-        })
-        
-        return result
-    
-    def _find_matching_torrent(self, db: Session, torrent_name: str) -> Optional[Torrent]:
-        """Find matching torrent by name similarity"""
-        # Clean torrent name
-        clean_name = self._clean_name(torrent_name)
-        
-        # Get all torrents
-        torrents = db.query(Torrent).all()
-        
-        best_match = None
-        best_score = 0.0
-        threshold = 0.7
-        
-        for torrent in torrents:
-            clean_torrent = self._clean_name(torrent.filename)
+                if torrent:
+                    symlink.matched_torrent_id = torrent.id
+                    matched_count += 1
+                    
+                    # Update torrent status for processing
+                    torrent.status = "symlink_broken"
+                    torrent.priority = 3  # High priority
             
-            # Calculate similarity
-            similarity = SequenceMatcher(None, clean_name, clean_torrent).ratio()
-            
-            if similarity > best_score and similarity >= threshold:
-                best_score = similarity
-                best_match = torrent
-        
-        return best_match
-    
-    def _clean_name(self, name: str) -> str:
-        """Clean filename for comparison"""
-        import re
-        
-        # Remove file extensions
-        clean = os.path.splitext(name)[0]
-        
-        # Replace separators with spaces
-        clean = re.sub(r'[._-]', ' ', clean.lower())
-        
-        # Remove common release tags
-        clean = re.sub(r'\b(x264|x265|1080p|720p|webrip|bluray|hdtv)\b', '', clean)
-        
-        # Remove extra spaces
-        clean = ' '.join(clean.split())
-        
-        return clean.strip()
-    
-    async def get_stats(self, db: Session) -> Dict:
-        """Get symlink statistics"""
-        total_broken = db.query(BrokenSymlink).count()
-        matched = db.query(BrokenSymlink).filter(
-            BrokenSymlink.matched_torrent_id.isnot(None)
-        ).count()
-        processed = db.query(BrokenSymlink).filter_by(processed=True).count()
-        
-        return {
-            "total_broken": total_broken,
-            "matched": matched,
-            "processed": processed,
-            "unprocessed": total_broken - processed,
-            "match_rate": (matched / total_broken * 100) if total_broken > 0 else 0
-        }
+            #
