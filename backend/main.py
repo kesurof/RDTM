@@ -6,7 +6,6 @@ import os
 import logging
 
 from app.api.routes import router as api_router
-from app.core.scheduler import scheduler
 from app.core.websocket import websocket_manager
 from app.core.config import settings
 from app.db.database import init_db
@@ -24,14 +23,9 @@ async def lifespan(app: FastAPI):
     
     # Créer répertoires data si nécessaire
     os.makedirs("./data", exist_ok=True)
-    os.makedirs("./logs", exist_ok=True)
     
     # Initialiser base de données
     await init_db()
-    
-    # Démarrer scheduler
-    await scheduler.start()
-    scheduler.add_scan_job(settings.scan_interval_minutes)
     
     logging.info("RDTM application started successfully")
     
@@ -39,7 +33,6 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logging.info("Shutting down RDTM application...")
-    await scheduler.shutdown()
     logging.info("RDTM application stopped")
 
 app = FastAPI(

@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from app.db.database import get_db
 from app.services.torrent_service import TorrentService
 from app.services.symlink_service import SymlinkService
-from app.db.models import Torrent, BrokenSymlink, SystemLog
+from app.db.models import Torrent, BrokenSymlink
 
 router = APIRouter()
 torrent_service = TorrentService()
@@ -141,41 +141,22 @@ async def match_symlinks(db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Stats and monitoring
+# Stats
 @router.get("/stats")
 async def get_stats(db: Session = Depends(get_db)):
-    torrent_stats = torrent_service.get_stats(db)
-    symlink_stats = await symlink_service.get_stats(db)
-    
-    return {
-        "torrents": torrent_stats,
-        "symlinks": symlink_stats,
-        "timestamp": "2024-01-01T00:00:00Z"
-    }
+    try:
+        torrent_stats = torrent_service.get_stats(db)
+        symlink_stats = await symlink_service.get_stats(db)
+        
+        return {
+            "torrents": torrent_stats,
+            "symlinks": symlink_stats,
+            "timestamp": "2024-01-01T00:00:00Z"
+        }
+    except Exception as e:
+        return {
+            "torrents": {"total_torrents": 0, "failed_torrents": 0},
+            "symlinks": {"total_broken": 0, "matched": 0},
+            "timestamp": "2024-01-01T00:00:00Z"
+        }
 
-@router.get("/logs")
-async def get_logs(
-    limit: int = Query(100, le=1000),
-    level: Optional[str] = None,
-    operation: Optional[str] = None,
-    db: Session = Depends(get_db)
-):
-    query = db.query(SystemLog)
-    
-    if level:
-        query = query.filter(SystemLog.level == level)
-    if operation:
-        query = query.filter(SystemLog.operation == operation)
-    
-    logs = query.order_by(SystemLog.timestamp.desc()).limit(limit).all()
-    
-    return [
-        {
-            "id": log.id,
-            "timestamp": log.timestamp.isoformat(),
-            "level": log.level,
-            "message": log.message,
-            "operation": log.operation,
-            "torrent_id": log.torrent_id
-        } for log in logs
-    ]

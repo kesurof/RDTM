@@ -74,14 +74,9 @@ class ApiClient {
     });
   }
 
-  // Stats & Monitoring
+  // Stats & Health
   async getStats() {
     return this.request('/stats');
-  }
-
-  async getLogs(params = {}) {
-    const searchParams = new URLSearchParams(params);
-    return this.request(`/logs?${searchParams}`);
   }
 
   async getHealth() {

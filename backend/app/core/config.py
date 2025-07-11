@@ -5,8 +5,7 @@ class Settings(BaseSettings):
     rd_api_token: str
     database_url: str = "sqlite:///./data/rdtm.db"
     log_level: str = "INFO"
-    media_path: str = "/home/user/Medias"
-    scan_interval_minutes: int = 10
+    media_path: str = "/medias"
     max_retry_attempts: int = 3
     
     class Config:

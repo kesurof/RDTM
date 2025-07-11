@@ -15,23 +15,16 @@ FROM python:3.11-slim
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     curl \
-    build-essential \
     && rm -rf /var/lib/apt/lists/*
-
-# Install Poetry
-RUN pip install poetry
 
 # Create app user
 RUN useradd -m -s /bin/bash app
 
 WORKDIR /app
 
-# Copy Poetry files
-COPY backend/pyproject.toml backend/poetry.lock ./
-
-# Install Python dependencies
-RUN poetry config virtualenvs.create false \
-    && poetry install --no-dev --no-root
+# Copy requirements and install Python dependencies
+COPY backend/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy backend code
 COPY backend/ ./
@@ -40,7 +33,7 @@ COPY backend/ ./
 COPY --from=frontend-builder /app/frontend/build ./static
 
 # Create necessary directories
-RUN mkdir -p data logs \
+RUN mkdir -p data \
     && chown -R app:app /app
 
 USER app

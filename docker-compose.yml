@@ -10,11 +10,9 @@ services:
       - RD_API_TOKEN=${RD_API_TOKEN}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - MEDIA_PATH=${MEDIA_PATH:-/medias}
-      - SCAN_INTERVAL_MINUTES=${SCAN_INTERVAL_MINUTES:-10}
     
     volumes:
       - rdtm_data:/app/data
-      - rdtm_logs:/app/logs
       - ${MEDIA_PATH:-./medias}:/medias:ro
     
     ports:
@@ -29,4 +27,3 @@ services:
 
 volumes:
   rdtm_data:
-  rdtm_logs:

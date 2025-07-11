@@ -61,12 +61,3 @@ class ScanProgress(Base):
     status = Column(String, default='idle')  # 'idle', 'running', 'completed'
 
 
-class SystemLog(Base):
-    __tablename__ = "system_logs"
-    
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    timestamp = Column(DateTime, default=datetime.utcnow)
-    level = Column(String, nullable=False)
-    message = Column(Text, nullable=False)
-    operation = Column(String)
-    torrent_id = Column(String)
