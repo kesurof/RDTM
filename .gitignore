@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+node_modules/
+/frontend/build/
+/frontend/.svelte-kit/
+*.db
+*.log
+logs/
+data/
